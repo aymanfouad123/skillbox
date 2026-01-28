@@ -38,14 +38,14 @@ export function SkillsCarousel() {
           <button
             onClick={goBack}
             disabled={!canGoBack}
-            className="w-8 h-8 border border-white/20 flex items-center justify-center transition-colors enabled:hover:border-white/60 disabled:opacity-20"
+            className="w-8 h-8 border border-white/20 flex items-center justify-center transition-colors enabled:hover:border-accent/60 enabled:hover:text-accent disabled:opacity-20"
           >
             ←
           </button>
           <button
             onClick={goForward}
             disabled={!canGoForward}
-            className="w-8 h-8 border border-white/20 flex items-center justify-center transition-colors enabled:hover:border-white/60 disabled:opacity-20"
+            className="w-8 h-8 border border-white/20 flex items-center justify-center transition-colors enabled:hover:border-accent/60 enabled:hover:text-accent disabled:opacity-20"
           >
             →
           </button>

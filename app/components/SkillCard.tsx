@@ -6,9 +6,9 @@ interface SkillCardProps {
 
 export function SkillCard({ skill }: SkillCardProps) {
   return (
-    <div className="border border-white/10 bg-black p-6 hover:bg-white/5 hover:border-white/30 cursor-pointer transition-all h-full">
+    <div className="border border-white/10 bg-black p-6 hover:bg-accent-muted hover:border-accent/30 cursor-pointer transition-all h-full group">
       <div className="flex items-start justify-between mb-4">
-        <span className="text-3xl font-bold text-white/20">#{skill.rank}</span>
+        <span className="text-3xl font-bold text-white/20 group-hover:text-accent/40 transition-colors">#{skill.rank}</span>
         <span className="text-[10px] bg-white/10 px-2 py-1 text-white-400 tracking-wider">
           {skill.installs}
         </span>
