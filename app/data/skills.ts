@@ -119,4 +119,6 @@ export interface CreateSandboxRequest {
   // The target repo to clone and use the skill on
   targetOwner: string;
   targetRepo: string;
+  // Anthropic API key for Claude CLI
+  anthropicApiKey: string;
 }

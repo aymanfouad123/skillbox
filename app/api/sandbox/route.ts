@@ -10,6 +10,8 @@ interface CreateSandboxRequest {
   // The target repo to clone and use the skill on
   targetOwner: string;
   targetRepo: string;
+  // Anthropic API key for Claude CLI
+  anthropicApiKey: string;
 }
 
 export async function POST(request: Request) {
@@ -18,7 +20,7 @@ export async function POST(request: Request) {
   try {
     // 1. Parse and validate the request body
     const body: CreateSandboxRequest = await request.json();
-    const { skillOwner, skillRepo, skillName, targetOwner, targetRepo } = body;
+    const { skillOwner, skillRepo, skillName, targetOwner, targetRepo, anthropicApiKey } = body;
 
     if (!skillOwner || !skillRepo || !skillName) {
       return NextResponse.json(
@@ -30,6 +32,13 @@ export async function POST(request: Request) {
     if (!targetOwner || !targetRepo) {
       return NextResponse.json(
         { error: "Missing required target repo fields: targetOwner, targetRepo" },
+        { status: 400 }
+      );
+    }
+
+    if (!anthropicApiKey) {
+      return NextResponse.json(
+        { error: "Missing required Anthropic API key" },
         { status: 400 }
       );
     }
@@ -66,7 +75,19 @@ export async function POST(request: Request) {
     // Change to the project directory for subsequent commands
     console.log(`Cloned target repo: ${targetOwner}/${targetRepo}`);
 
-    // 4. Installing TTYD to access the claude cli
+    // 4. Install Node.js dependencies and Claude CLI
+    console.log("Installing Claude CLI...");
+    try {
+      await sbx.commands.run(
+        "npm install -g @anthropic-ai/claude-code",
+        { timeoutMs: 120_000 }
+      );
+      console.log("Claude CLI installed via npm");
+    } catch (npmError) {
+      console.warn(`Claude CLI npm install warning: ${npmError}`);
+    }
+
+    // 5. Installing TTYD to access the claude cli
     // Try with sudo first, if that fails, download the binary directly
     try {
       await sbx.commands.run(
@@ -86,7 +107,7 @@ export async function POST(request: Request) {
       console.log("TTYD installed via binary download");
     }
 
-    // 5. Inject the skill from the skill source repo (in the project directory)
+    // 6. Inject the skill from the skill source repo (in the project directory)
     try {
       const skillAddResult = await sbx.commands.run(
         `cd /home/user/project && npx skills add ${skillOwner}/${skillRepo} --skill ${skillName}`,
@@ -98,20 +119,20 @@ export async function POST(request: Request) {
       console.warn(`Skill add failed (continuing anyway): ${skillError}`);
     }
 
-    // 6. Start TTYD in the background in the project directory
-    // "claude": the command to run inside the terminal (Claude CLI)
-    // background: true means the command runs without blocking
-    // Use PATH that includes both /usr/local/bin and /home/user
+    // 7. Start TTYD in the background with Claude CLI
+    // Set the ANTHROPIC_API_KEY environment variable for Claude CLI
+    // The API key is passed securely and not logged
+    console.log("Starting TTYD with Claude CLI...");
     await sbx.commands.run(
-      "cd /home/user/project && (ttyd -p 7681 bash || /usr/local/bin/ttyd -p 7681 bash || /home/user/ttyd -p 7681 bash)",
+      `cd /home/user/project && ANTHROPIC_API_KEY="${anthropicApiKey}" ttyd -p 7681 claude`,
       { background: true }
     );
-    console.log("TTYD started");
+    console.log("TTYD started with Claude CLI");
 
-    // 7. Get the public URL for the TTYD port
+    // 8. Get the public URL for the TTYD port
     const ttydUrl = `https://${sbx.getHost(7681)}`;
 
-    // 8. Return the sandbox info to the client
+    // 9. Return the sandbox info to the client
     return NextResponse.json({
       sandboxId: sbx.sandboxId,
       ttydUrl,

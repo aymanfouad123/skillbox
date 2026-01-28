@@ -25,14 +25,17 @@ export function SandboxPage({
   const [selectedPlayground, setSelectedPlayground] =
     useState<Playground | null>(null);
 
+  // Anthropic API key for Claude CLI
+  const [apiKey, setApiKey] = useState("");
+
   // The actual skill to use - either from URL or user input
   const activeSkill = skillFromUrl || skillInput;
 
-  // Check if ready to boot (has skill and selected repo)
-  const canBoot = activeSkill.trim() && selectedPlayground;
+  // Check if ready to boot (has skill, selected repo, and API key)
+  const canBoot = activeSkill.trim() && selectedPlayground && apiKey.trim();
 
   const handleBoot = async () => {
-    if (!activeSkill.trim() || !selectedPlayground) {
+    if (!activeSkill.trim() || !selectedPlayground || !apiKey.trim()) {
       return;
     }
 
@@ -50,6 +53,8 @@ export function SandboxPage({
           // Target repo to clone
           targetOwner: selectedPlayground.owner,
           targetRepo: selectedPlayground.repo,
+          // Anthropic API key
+          anthropicApiKey: apiKey.trim(),
         }),
       });
 
@@ -235,6 +240,33 @@ export function SandboxPage({
               </div>
             </div>
 
+            {/* Step 3: Anthropic API Key */}
+            <div className="mb-6">
+              <label className="block text-sm text-gray-400 mb-2">
+                {skillFromUrl ? "2" : "3"}. Enter your Anthropic API key:
+              </label>
+              <div className="relative">
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="api03-xxxxx..."
+                  className="w-full bg-black border border-white/20 p-4 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none transition-colors font-mono"
+                />
+              </div>
+              <p className="mt-2 text-xs text-gray-600">
+                Your API key is sent securely to the sandbox and never stored.{" "}
+                <a
+                  href="https://console.anthropic.com/settings/keys"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-orange-500/70 hover:text-orange-500"
+                >
+                  Get an API key
+                </a>
+              </p>
+            </div>
+
             {/* Boot button */}
             <button
               type="submit"
@@ -252,7 +284,9 @@ export function SandboxPage({
                 ? "Enter a skill name"
                 : !selectedPlayground
                   ? "Select a repository"
-                  : `Boot ${selectedPlayground.title} with ${activeSkill}`}
+                  : !apiKey.trim()
+                    ? "Enter your API key"
+                    : `Boot ${selectedPlayground.title} with ${activeSkill}`}
             </button>
           </form>
         )}
