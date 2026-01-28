@@ -1,13 +1,31 @@
+"use client";
+
+import { useState, useRef } from "react";
 import { SkillsCarousel } from "./components/SkillsCarousel";
 import { PlaygroundBoxes } from "./components/PlaygroundBoxes";
 
 export default function Home() {
+  const [searchValue, setSearchValue] = useState("");
+  const [isBooting, setIsBooting] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleBoot = (path: string) => {
+    setSearchValue(path);
+    setIsBooting(true);
+    inputRef.current?.focus();
+
+    // Reset booting state after animation
+    setTimeout(() => {
+      setIsBooting(false);
+    }, 1500);
+  };
+
   return (
     <main className="min-h-screen bg-black text-white font-mono selection:bg-accent selection:text-black">
       {/* Subtle background gradient */}
       <div className="fixed inset-0 bg-[radial-gradient(circle_at_center,var(--tw-gradient-stops))] from-white/5 via-transparent to-transparent pointer-events-none" />
 
-      <div className="max-w-4xl mx-auto pt-32 px-6 relative z-10">
+      <div className="max-w-4xl mx-auto pt-16 px-6 relative z-10">
         {/* Logo/Brand */}
         <div className="flex items-center gap-4 mb-12">
           <div className="w-8 h-8 border border-white flex items-center justify-center">
@@ -17,19 +35,36 @@ export default function Home() {
         </div>
 
         {/* The Action Hook */}
-        <div className="mb-24">
-          <p className="text-gray-400 mb-4 text-sm tracking-widest uppercase">
+        <div className="mb-12">
+          <p className="text-orange-400/80 mb-4 text-sm tracking-widest uppercase">
             Tryout Agent Skills
           </p>
-          <div className="group relative border border-white/20 p-4 hover:border-accent/50 transition-colors">
-            <span className="text-white/40 mr-2">$</span>
+          <div
+            className={`
+              group relative border p-4 transition-all duration-300
+              ${isBooting ? "border-accent bg-accent-muted" : "border-white/20 hover:border-accent/50"}
+            `}
+          >
+            <span
+              className={`mr-2 transition-colors ${isBooting ? "text-accent" : "text-white/40"}`}
+            >
+              $
+            </span>
             <input
+              ref={inputRef}
+              value={searchValue}
+              onChange={(e) => setSearchValue(e.target.value)}
               className="bg-transparent outline-none w-full max-w-lg text-lg"
               placeholder="skillbox.sh/softaworks/agent-toolkit/mermaid-diagrams"
               autoFocus
             />
-            <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 hidden group-hover:block">
-              PRESS ENTER TO BOOT
+            <div
+              className={`
+                absolute right-4 top-1/2 -translate-y-1/2 text-[10px] tracking-wider transition-all
+                ${isBooting ? "text-accent animate-pulse block" : "text-gray-500 hidden group-hover:block"}
+              `}
+            >
+              {isBooting ? "BOOTING..." : "PRESS ENTER TO BOOT"}
             </div>
           </div>
         </div>
@@ -38,7 +73,7 @@ export default function Home() {
         <PlaygroundBoxes />
 
         {/* Top Skills Carousel */}
-        <SkillsCarousel />
+        <SkillsCarousel onBoot={handleBoot} />
       </div>
     </main>
   );

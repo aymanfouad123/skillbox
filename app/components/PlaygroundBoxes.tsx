@@ -51,12 +51,9 @@ export function PlaygroundBoxes() {
   };
 
   return (
-    <section className="mb-24">
-      <p className="text-gray-400 mb-2 text-sm tracking-widest uppercase">
+    <section className="mb-12">
+      <p className="text-orange-400/80 mb-2 text-sm tracking-widest uppercase">
         Try Skills in Production
-      </p>
-      <p className="text-gray-500 text-xs mb-6">
-        Test these skills in a real Vercel production environment.
       </p>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -78,7 +75,9 @@ export function PlaygroundBoxes() {
               <div className="flex items-start justify-between">
                 <h3
                   className={`text-lg font-bold mb-2 transition-colors ${
-                    isLatched ? "text-accent" : "text-white group-hover:text-white"
+                    isLatched
+                      ? "text-accent"
+                      : "text-white group-hover:text-white"
                   }`}
                 >
                   {pg.title}
@@ -128,10 +127,7 @@ export function PlaygroundBoxes() {
                     : "text-gray-600 group-hover:text-gray-400"
                 }`}
               >
-                {isLatched && (
-                  <span className="w-1.5 h-1.5 bg-accent rounded-full animate-pulse" />
-                )}
-                {isLatched ? "LATCHED" : "SELECT TO LATCH"}
+                {isLatched ? "[ LATCHED ]" : "[ SELECT TO LATCH ]"}
               </div>
             </div>
           );

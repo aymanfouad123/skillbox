@@ -8,7 +8,11 @@ const ITEMS_PER_PAGE = 3;
 const CARD_WIDTH = 256; // w-64 = 16rem = 256px
 const GAP = 16; // gap-4 = 1rem = 16px
 
-export function SkillsCarousel() {
+interface SkillsCarouselProps {
+  onBoot?: (path: string) => void;
+}
+
+export function SkillsCarousel({ onBoot }: SkillsCarouselProps) {
   const [startIndex, setStartIndex] = useState(0);
 
   const canGoBack = startIndex > 0;
@@ -29,9 +33,9 @@ export function SkillsCarousel() {
   const translateX = -(startIndex * (CARD_WIDTH + GAP));
 
   return (
-    <section className="mb-24">
+    <section className="mb-16">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-sm tracking-widest text-gray-400 uppercase">
+        <h2 className="text-sm tracking-widest text-orange-400/80 uppercase">
           Top Skills
         </h2>
         <div className="flex items-center gap-2">
@@ -59,7 +63,7 @@ export function SkillsCarousel() {
         >
           {TOP_SKILLS.map((skill) => (
             <div key={skill.rank} className="shrink-0 w-64">
-              <SkillCard skill={skill} />
+              <SkillCard skill={skill} onBoot={onBoot} />
             </div>
           ))}
         </div>
