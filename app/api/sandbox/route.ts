@@ -1,160 +1,156 @@
 import { Sandbox } from "e2b";
 import { NextResponse } from "next/server";
 
-// TypeScript interface for the request body
 interface CreateSandboxRequest {
-  // The skill source (from URL)
   skillOwner: string;
   skillRepo: string;
   skillName: string;
-  // The target repo to clone and use the skill on
   targetOwner: string;
   targetRepo: string;
-  // Anthropic API key for Claude CLI
   anthropicApiKey: string;
+}
+
+// Helper to run commands and log results (doesn't throw on non-zero exit)
+async function runCommand(
+  sbx: Sandbox, 
+  cmd: string, 
+  opts?: { timeoutMs?: number }
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  try {
+    const result = await sbx.commands.run(cmd, opts);
+    return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
+  } catch (error: unknown) {
+    // e2b throws on non-zero exit codes, extract the info
+    if (error && typeof error === 'object' && 'result' in error) {
+      const cmdError = error as { result: { stdout: string; stderr: string; exitCode: number } };
+      return { 
+        stdout: cmdError.result?.stdout || '', 
+        stderr: cmdError.result?.stderr || '', 
+        exitCode: cmdError.result?.exitCode || 1 
+      };
+    }
+    throw error;
+  }
 }
 
 export async function POST(request: Request) {
   let sbx: Sandbox | null = null;
   
   try {
-    // 1. Parse and validate the request body
     const body: CreateSandboxRequest = await request.json();
     const { skillOwner, skillRepo, skillName, targetOwner, targetRepo, anthropicApiKey } = body;
 
-    if (!skillOwner || !skillRepo || !skillName) {
-      return NextResponse.json(
-        { error: "Missing required skill fields: skillOwner, skillRepo, skillName" },
-        { status: 400 }
-      );
+    // Validation
+    if (!skillOwner || !skillRepo || !skillName || !targetOwner || !targetRepo || !anthropicApiKey) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    if (!targetOwner || !targetRepo) {
-      return NextResponse.json(
-        { error: "Missing required target repo fields: targetOwner, targetRepo" },
-        { status: 400 }
-      );
-    }
+    console.log(`Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}...`);
 
-    if (!anthropicApiKey) {
-      return NextResponse.json(
-        { error: "Missing required Anthropic API key" },
-        { status: 400 }
-      );
-    }
-
-    // 2. Create the E2B sandbox
-    // timeoutMs: how long the sandbox stays alive (5 minutes here)
-    sbx = await Sandbox.create({ timeoutMs: 300_000 });
+    // 1. Create Sandbox
+    sbx = await Sandbox.create({ timeoutMs: 300_000 }); // 5 minutes
     console.log(`Sandbox created: ${sbx.sandboxId}`);
 
-    // 3. Clone the TARGET repository (the Vercel repo to use the skill on)
-    // First, let's check the environment and create a project directory
-    const pwdResult = await sbx.commands.run("pwd && ls -la");
-    console.log(`Current directory: ${pwdResult.stdout}`);
-    
-    // Create a project directory and clone into it
+    // 2. Setup Project Directory
     await sbx.commands.run("mkdir -p /home/user/project");
     
-    try {
-      const cloneResult = await sbx.commands.run(
-        `git clone https://github.com/${targetOwner}/${targetRepo}.git /home/user/project`,
-        { timeoutMs: 120_000 } // 2 min timeout for large repos
-      );
-      console.log(`Clone stdout: ${cloneResult.stdout}`);
-      console.log(`Clone stderr: ${cloneResult.stderr}`);
-    } catch (cloneError: unknown) {
-      // Extract error details from CommandExitError
-      const errorDetails = cloneError instanceof Error 
-        ? JSON.stringify(cloneError, Object.getOwnPropertyNames(cloneError), 2)
-        : String(cloneError);
-      console.error(`Git clone error details: ${errorDetails}`);
-      throw new Error(`Git clone failed for ${targetOwner}/${targetRepo}. Check if the repository exists and is public.`);
+    // 3. Clone Target Repository
+    console.log(`Cloning ${targetOwner}/${targetRepo}...`);
+    const cloneResult = await runCommand(
+      sbx,
+      `git clone --depth 1 https://github.com/${targetOwner}/${targetRepo}.git /home/user/project`,
+      { timeoutMs: 120_000 }
+    );
+    if (cloneResult.exitCode !== 0) {
+      throw new Error(`Git clone failed: ${cloneResult.stderr}`);
     }
-    
-    // Change to the project directory for subsequent commands
-    console.log(`Cloned target repo: ${targetOwner}/${targetRepo}`);
+    console.log("Repository cloned successfully");
 
-    // 4. Install Node.js dependencies and Claude CLI
+    // 4. Install Claude CLI
     console.log("Installing Claude CLI...");
-    try {
-      await sbx.commands.run(
-        "npm install -g @anthropic-ai/claude-code",
-        { timeoutMs: 120_000 }
-      );
-      console.log("Claude CLI installed via npm");
-    } catch (npmError) {
-      console.warn(`Claude CLI npm install warning: ${npmError}`);
+    const claudeInstall = await runCommand(
+      sbx,
+      "npm install -g @anthropic-ai/claude-code",
+      { timeoutMs: 120_000 }
+    );
+    if (claudeInstall.exitCode !== 0) {
+      console.warn(`Claude CLI install warning: ${claudeInstall.stderr}`);
     }
 
-    // 5. Installing TTYD to access the claude cli
-    // Try with sudo first, if that fails, download the binary directly
-    try {
-      await sbx.commands.run(
-        "sudo apt-get update && sudo apt-get install -y ttyd",
-        { timeoutMs: 120_000 }
-      );
-      console.log("TTYD installed via apt-get");
-    } catch (aptError) {
-      console.log("apt-get failed, downloading TTYD binary directly...");
-      // Download TTYD binary directly from GitHub releases
-      await sbx.commands.run(
-        `curl -L -o /tmp/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 && chmod +x /tmp/ttyd`,
-        { timeoutMs: 60_000 }
-      );
-      // Move to a location in PATH
-      await sbx.commands.run("sudo mv /tmp/ttyd /usr/local/bin/ttyd || mv /tmp/ttyd /home/user/ttyd");
-      console.log("TTYD installed via binary download");
-    }
+    // 5. Install TTYD (download binary directly since apt-get often fails in sandboxes)
+    console.log("Installing TTYD...");
+    const ttydInstall = await runCommand(
+      sbx,
+      `curl -sL -o /tmp/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 && ` +
+      `chmod +x /tmp/ttyd && ` +
+      `mv /tmp/ttyd /usr/local/bin/ttyd || mv /tmp/ttyd /home/user/ttyd`,
+      { timeoutMs: 60_000 }
+    );
+    
+    // Determine ttyd path
+    const ttydPath = ttydInstall.exitCode === 0 ? "ttyd" : "/home/user/ttyd";
+    console.log(`TTYD installed at: ${ttydPath}`);
 
-    // 6. Inject the skill from the skill source repo (in the project directory)
-    try {
-      const skillAddResult = await sbx.commands.run(
-        `cd /home/user/project && npx skills add ${skillOwner}/${skillRepo} --skill ${skillName}`,
-        { timeoutMs: 120_000 }
-      );
-      console.log(`Added skill: ${skillName} from ${skillOwner}/${skillRepo}`);
-      console.log(`Skill add stdout: ${skillAddResult.stdout}`);
-    } catch (skillError) {
-      console.warn(`Skill add failed (continuing anyway): ${skillError}`);
+    // 6. Inject the Skill (with --yes to avoid interactive prompts)
+    console.log(`Adding skill: ${skillName}...`);
+    const skillResult = await runCommand(
+      sbx,
+      `cd /home/user/project && npx -y skills add ${skillOwner}/${skillRepo} --skill ${skillName} --yes`,
+      { timeoutMs: 120_000 }
+    );
+    if (skillResult.exitCode !== 0) {
+      console.warn(`Skill add warning (continuing): ${skillResult.stderr}`);
     }
+    console.log("Skill injection completed");
 
-    // 7. Start TTYD in the background with Claude CLI
-    // Set the ANTHROPIC_API_KEY environment variable for Claude CLI
-    // The API key is passed securely and not logged
-    console.log("Starting TTYD with Claude CLI...");
+    // 7. Pre-configure Claude CLI to skip onboarding/setup
+    console.log("Configuring Claude CLI...");
+    await runCommand(
+      sbx,
+      // Create Claude config directory and settings to skip first-run setup
+      `mkdir -p /home/user/.claude && ` +
+      `echo '{"theme":"dark","hasCompletedOnboarding":true,"autoUpdaterStatus":"disabled"}' > /home/user/.claude/settings.json`
+    );
+
+    // 8. Start TTYD with Claude + Initial Prompt
+    console.log("Launching Claude Agent...");
     await sbx.commands.run(
-      `cd /home/user/project && ANTHROPIC_API_KEY="${anthropicApiKey}" ttyd -p 7681 claude`,
+      `cd /home/user/project && ` +
+      // Environment variables for Claude CLI
+      `ANTHROPIC_API_KEY="${anthropicApiKey}" ` +
+      `TERM=xterm-256color ` +
+      `CLAUDE_CODE_SKIP_ONBOARDING=1 ` +
+      `NO_COLOR=0 ` +
+      // TTYD flags: -W for write, -t for terminal options
+      `${ttydPath} -p 7681 -W -t fontSize=14 -t disableLeaveAlert=true ` +
+      `claude --dangerously-skip-permissions "tell me about this repo and how the ${skillName} skill I just added can help improve it"`,
       { background: true }
     );
-    console.log("TTYD started with Claude CLI");
 
-    // 8. Get the public URL for the TTYD port
+    // Give TTYD a moment to start
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     const ttydUrl = `https://${sbx.getHost(7681)}`;
+    console.log(`Sandbox ready: ${ttydUrl}`);
 
-    // 9. Return the sandbox info to the client
     return NextResponse.json({
       sandboxId: sbx.sandboxId,
       ttydUrl,
-      status: "ready",
-      targetRepo: `${targetOwner}/${targetRepo}`,
-      skill: `${skillOwner}/${skillRepo}/${skillName}`,
+      status: "ready"
     });
+
   } catch (error) {
     console.error("Sandbox creation failed:", error);
-    
-    // Try to kill the sandbox if it was created but something failed
     if (sbx) {
       try {
         await sbx.kill();
         console.log(`Killed failed sandbox: ${sbx.sandboxId}`);
-      } catch (killError) {
-        console.error("Failed to kill sandbox:", killError);
+      } catch (killErr) {
+        console.error("Failed to kill sandbox:", killErr);
       }
     }
-    
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unknown error" },
+      { error: error instanceof Error ? error.message : "Failed to initialize" },
       { status: 500 }
     );
   }
