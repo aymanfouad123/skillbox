@@ -2,13 +2,27 @@ import type { Skill } from "../data/skills";
 
 interface SkillCardProps {
   skill: Skill;
+  onBoot?: (path: string) => void;
 }
 
-export function SkillCard({ skill }: SkillCardProps) {
+export function SkillCard({ skill, onBoot }: SkillCardProps) {
+  const skillPath = `skillbox.sh/${skill.author}/${skill.name}`;
+
+  const handleClick = () => {
+    onBoot?.(skillPath);
+  };
+
   return (
-    <div className="border border-white/10 bg-black p-6 hover:bg-accent-muted hover:border-accent/30 cursor-pointer transition-all h-full group">
+    <div
+      onClick={handleClick}
+      className="border border-white/10 bg-black p-6 hover:bg-accent-muted hover:border-accent/30 cursor-pointer transition-all h-full group"
+    >
       <div className="flex items-start justify-between mb-4">
-        <span className="text-3xl font-bold text-white/20 group-hover:text-accent/40 transition-colors">#{skill.rank}</span>
+        {/* Rank transforms to BOOT on hover */}
+        <span className="text-xl font-bold text-white/20 group-hover:text-accent transition-colors">
+          <span className="group-hover:hidden">#{skill.rank}</span>
+          <span className="hidden group-hover:inline text-sm tracking-wider">[ BOOT ]</span>
+        </span>
         <span className="text-[10px] bg-white/10 px-2 py-1 text-white-400 tracking-wider">
           {skill.installs}
         </span>

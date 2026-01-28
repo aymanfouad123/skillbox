@@ -1,4 +1,5 @@
 import { SkillsCarousel } from "./components/SkillsCarousel";
+import { PlaygroundBoxes } from "./components/PlaygroundBoxes";
 
 export default function Home() {
   return (
@@ -32,6 +33,9 @@ export default function Home() {
             </div>
           </div>
         </div>
+
+        {/* Playground Boxes - Try skills in real Vercel production */}
+        <PlaygroundBoxes />
 
         {/* Top Skills Carousel */}
         <SkillsCarousel />
