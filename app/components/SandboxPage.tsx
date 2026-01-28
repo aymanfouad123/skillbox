@@ -1,7 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { SandboxState, PLAYGROUNDS, Playground } from "../data/skills";
+
+const API_KEY_STORAGE_KEY = "skillbox_anthropic_api_key";
 
 interface SandboxPageProps {
   owner: string;
@@ -27,6 +29,41 @@ export function SandboxPage({
 
   // Anthropic API key for Claude CLI
   const [apiKey, setApiKey] = useState("");
+  const [rememberApiKey, setRememberApiKey] = useState(false);
+
+  // Load API key from localStorage on mount
+  useEffect(() => {
+    const savedKey = localStorage.getItem(API_KEY_STORAGE_KEY);
+    if (savedKey) {
+      setApiKey(savedKey);
+      setRememberApiKey(true);
+    }
+  }, []);
+
+  // Save or clear API key in localStorage when checkbox changes
+  const handleRememberChange = (checked: boolean) => {
+    setRememberApiKey(checked);
+    if (checked && apiKey.trim()) {
+      localStorage.setItem(API_KEY_STORAGE_KEY, apiKey.trim());
+    } else if (!checked) {
+      localStorage.removeItem(API_KEY_STORAGE_KEY);
+    }
+  };
+
+  // Update localStorage when API key changes (if remember is checked)
+  const handleApiKeyChange = (value: string) => {
+    setApiKey(value);
+    if (rememberApiKey && value.trim()) {
+      localStorage.setItem(API_KEY_STORAGE_KEY, value.trim());
+    }
+  };
+
+  // Clear saved API key
+  const handleClearSavedKey = () => {
+    localStorage.removeItem(API_KEY_STORAGE_KEY);
+    setApiKey("");
+    setRememberApiKey(false);
+  };
 
   // The actual skill to use - either from URL or user input
   const activeSkill = skillFromUrl || skillInput;
@@ -249,13 +286,44 @@ export function SandboxPage({
                 <input
                   type="password"
                   value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="api03-xxxxx..."
+                  onChange={(e) => handleApiKeyChange(e.target.value)}
+                  placeholder="sk-ant-xxxxx..."
                   className="w-full bg-black border border-white/20 p-4 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none transition-colors font-mono"
                 />
               </div>
+
+              {/* Remember API Key checkbox */}
+              <div className="mt-3 flex items-center justify-between">
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={rememberApiKey}
+                    onChange={(e) => handleRememberChange(e.target.checked)}
+                    className="w-4 h-4 bg-black border border-white/20 rounded-none appearance-none cursor-pointer checked:bg-orange-500 checked:border-orange-500 relative
+                      after:content-[''] after:absolute after:hidden checked:after:block
+                      after:left-[5px] after:top-[2px] after:w-[4px] after:h-[8px]
+                      after:border-black after:border-r-2 after:border-b-2 after:rotate-45"
+                  />
+                  <span className="text-xs text-gray-500 group-hover:text-gray-400 transition-colors">
+                    Remember my API key
+                  </span>
+                </label>
+
+                {rememberApiKey && apiKey && (
+                  <button
+                    type="button"
+                    onClick={handleClearSavedKey}
+                    className="text-xs text-red-500/70 hover:text-red-500 transition-colors"
+                  >
+                    Clear saved key
+                  </button>
+                )}
+              </div>
+
               <p className="mt-2 text-xs text-gray-600">
-                Your API key is sent securely to the sandbox and never stored.{" "}
+                {rememberApiKey
+                  ? "Stored locally in your browser. Never sent to our servers."
+                  : "Your API key is sent securely to the sandbox."}{" "}
                 <a
                   href="https://console.anthropic.com/settings/keys"
                   target="_blank"
@@ -319,7 +387,7 @@ export function SandboxPage({
         )}
 
         {sandboxState.status === "ready" && sandboxState.ttydUrl && (
-          <div>
+          <div className="pb-8">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-gray-500">
                 Sandbox ID: {sandboxState.sandboxId}
@@ -333,13 +401,24 @@ export function SandboxPage({
                 Open in New Tab ↗
               </a>
             </div>
-            <div className="border border-white/20">
+            <div className="border border-white/20 rounded overflow-hidden">
               <iframe
                 src={sandboxState.ttydUrl}
-                className="w-full h-[600px] bg-black"
+                className="w-full bg-black"
+                style={{
+                  height: "calc(100vh - 200px)",
+                  minHeight: "500px",
+                  maxHeight: "800px",
+                }}
                 title="Sandbox Terminal"
+                allow="clipboard-read; clipboard-write"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
               />
             </div>
+            <p className="mt-2 text-xs text-gray-600 text-center">
+              Tip: Click inside the terminal to focus. Use Ctrl+Shift+V to
+              paste.
+            </p>
           </div>
         )}
       </div>
