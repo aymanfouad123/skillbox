@@ -65,6 +65,34 @@ export function SandboxPage({
     setRememberApiKey(false);
   };
 
+  // Track if we're killing the sandbox
+  const [isKilling, setIsKilling] = useState(false);
+
+  // Kill the sandbox session
+  const handleKillSandbox = async () => {
+    if (!sandboxState.sandboxId || isKilling) return;
+
+    setIsKilling(true);
+    try {
+      const response = await fetch("/api/sandbox", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sandboxId: sandboxState.sandboxId }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        console.error("Failed to kill sandbox:", error);
+      }
+    } catch (error) {
+      console.error("Failed to kill sandbox:", error);
+    } finally {
+      // Reset to idle state regardless of success/failure
+      setSandboxState({ status: "idle" });
+      setIsKilling(false);
+    }
+  };
+
   // The actual skill to use - either from URL or user input
   const activeSkill = skillFromUrl || skillInput;
 
@@ -392,14 +420,30 @@ export function SandboxPage({
               <span className="text-xs text-gray-500">
                 Sandbox ID: {sandboxState.sandboxId}
               </span>
-              <a
-                href={sandboxState.ttydUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-orange-400 hover:text-orange-300"
-              >
-                Open in New Tab ↗
-              </a>
+              <div className="flex items-center gap-4">
+                <a
+                  href={sandboxState.ttydUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-orange-400 hover:text-orange-300"
+                >
+                  Open in New Tab ↗
+                </a>
+                <button
+                  onClick={handleKillSandbox}
+                  disabled={isKilling}
+                  className={`
+                    text-xs px-3 py-1 border transition-colors
+                    ${
+                      isKilling
+                        ? "border-gray-600 text-gray-600 cursor-not-allowed"
+                        : "border-red-500/50 text-red-500 hover:bg-red-500 hover:text-black"
+                    }
+                  `}
+                >
+                  {isKilling ? "Killing..." : "Kill Session"}
+                </button>
+              </div>
             </div>
             <div className="border border-white/20 rounded overflow-hidden">
               <iframe
