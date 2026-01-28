@@ -1,34 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-
-interface Playground {
-  id: string;
-  title: string;
-  repo: string;
-  description: string;
-}
-
-const playgrounds: Playground[] = [
-  {
-    id: "commerce",
-    title: "Commerce",
-    repo: "https://github.com/vercel/commerce",
-    description: "Next.js e-commerce template",
-  },
-  {
-    id: "chat",
-    title: "Chat",
-    repo: "https://github.com/vercel/ai-chatbot",
-    description: "AI SDK chatbot starter",
-  },
-  {
-    id: "platforms",
-    title: "Platforms",
-    repo: "https://github.com/vercel/platforms",
-    description: "Multi-tenant app template",
-  },
-];
+import { PLAYGROUNDS } from "../data/skills";
 
 export function PlaygroundBoxes() {
   const [latched, setLatched] = useState<string | null>(null);
@@ -57,7 +30,7 @@ export function PlaygroundBoxes() {
       </p>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {playgrounds.map((pg) => {
+        {PLAYGROUNDS.map((pg) => {
           const isLatched = latched === pg.id;
           return (
             <div
@@ -85,7 +58,7 @@ export function PlaygroundBoxes() {
 
                 {/* Arrow link to repo */}
                 <a
-                  href={pg.repo}
+                  href={`https://github.com/${pg.owner}/${pg.repo}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}

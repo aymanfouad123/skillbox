@@ -76,9 +76,47 @@ export interface SandboxState {
   error?: string;
 }
 
-// Request body for creating a sandbox
-export interface CreateSandboxRequest {
+// Playground repository for running skills
+export interface Playground {
+  id: string;
+  title: string;
   owner: string;
   repo: string;
-  skills: Skill[];
+  description: string;
+}
+
+// Available playgrounds (Vercel repos)
+export const PLAYGROUNDS: Playground[] = [
+  {
+    id: "commerce",
+    title: "Commerce",
+    owner: "vercel",
+    repo: "commerce",
+    description: "Next.js e-commerce template",
+  },
+  {
+    id: "chat",
+    title: "Chat",
+    owner: "vercel",
+    repo: "ai-chatbot",
+    description: "AI SDK chatbot starter",
+  },
+  {
+    id: "platforms",
+    title: "Platforms",
+    owner: "vercel",
+    repo: "platforms",
+    description: "Multi-tenant app template",
+  },
+];
+
+// Request body for creating a sandbox
+export interface CreateSandboxRequest {
+  // The skill source (from URL)
+  skillOwner: string;
+  skillRepo: string;
+  skillName: string;
+  // The target repo to clone and use the skill on
+  targetOwner: string;
+  targetRepo: string;
 }

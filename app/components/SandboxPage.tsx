@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { SandboxState } from "../data/skills";
+import { useState } from "react";
+import { SandboxState, PLAYGROUNDS, Playground } from "../data/skills";
 
 interface SandboxPageProps {
   owner: string;
@@ -9,20 +9,33 @@ interface SandboxPageProps {
   skill?: string;
 }
 
-export function SandboxPage({ owner, repo, skill }: SandboxPageProps) {
+export function SandboxPage({
+  owner,
+  repo,
+  skill: skillFromUrl,
+}: SandboxPageProps) {
   const [sandboxState, setSandboxState] = useState<SandboxState>({
     status: "idle",
   });
-  const [autoBooted, setAutoBooted] = useState(false);
 
-  useEffect(() => {
-    if (!autoBooted) {
-      handleBoot();
-      setAutoBooted(true);
-    }
-  }, [autoBooted]);
+  // Local state for skill input when not provided in URL
+  const [skillInput, setSkillInput] = useState("");
+
+  // Selected playground repo to clone
+  const [selectedPlayground, setSelectedPlayground] =
+    useState<Playground | null>(null);
+
+  // The actual skill to use - either from URL or user input
+  const activeSkill = skillFromUrl || skillInput;
+
+  // Check if ready to boot (has skill and selected repo)
+  const canBoot = activeSkill.trim() && selectedPlayground;
 
   const handleBoot = async () => {
+    if (!activeSkill.trim() || !selectedPlayground) {
+      return;
+    }
+
     setSandboxState({ status: "creating" });
 
     try {
@@ -30,9 +43,13 @@ export function SandboxPage({ owner, repo, skill }: SandboxPageProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          owner,
-          repo,
-          skills: skill ? [{ name: skill, author: `${owner}/${repo}` }] : [],
+          // Skill source (from URL)
+          skillOwner: owner,
+          skillRepo: repo,
+          skillName: activeSkill.trim(),
+          // Target repo to clone
+          targetOwner: selectedPlayground.owner,
+          targetRepo: selectedPlayground.repo,
         }),
       });
 
@@ -53,6 +70,11 @@ export function SandboxPage({ owner, repo, skill }: SandboxPageProps) {
         error: error instanceof Error ? error.message : "Unknown error",
       });
     }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    handleBoot();
   };
 
   return (
@@ -85,13 +107,13 @@ export function SandboxPage({ owner, repo, skill }: SandboxPageProps) {
         {/* Skill info card */}
         <div className="border border-white/20 p-6 mb-6">
           <div className="text-orange-400/80 text-sm tracking-widest uppercase mb-2">
-            {skill ? "Skill Sandbox" : "Repository Sandbox"}
+            {activeSkill ? "Skill Sandbox" : "Select a Skill"}
           </div>
-          <h2 className="text-3xl font-bold mb-2">{skill || repo}</h2>
+          <h2 className="text-3xl font-bold mb-2">{activeSkill || repo}</h2>
           <p className="text-gray-400">
-            {skill
-              ? `Try the ${skill} skill from ${owner}/${repo}`
-              : `Explore the ${repo} repository by ${owner}`}
+            {activeSkill
+              ? `Try the ${activeSkill} skill from ${owner}/${repo}`
+              : `Choose a skill from ${owner}/${repo} to get started`}
           </p>
 
           {/* Install command preview */}
@@ -99,21 +121,140 @@ export function SandboxPage({ owner, repo, skill }: SandboxPageProps) {
             <span className="text-gray-500">$</span>{" "}
             <span className="text-white">
               npx skills add {owner}/{repo}
-              {skill && (
-                <span className="text-orange-400"> --skill {skill}</span>
+              {activeSkill && (
+                <span className="text-orange-400"> --skill {activeSkill}</span>
               )}
             </span>
           </div>
         </div>
 
-        {/* Sandbox area */}
+        {/* Sandbox setup area - shown when idle */}
         {sandboxState.status === "idle" && (
-          <button
-            onClick={handleBoot}
-            className="w-full py-6 border border-orange-500 text-orange-500 text-lg tracking-widest uppercase hover:bg-orange-500 hover:text-black transition-all"
-          >
-            Boot Sandbox
-          </button>
+          <form onSubmit={handleSubmit}>
+            {/* Step 1: Skill input (only if not provided in URL) */}
+            {!skillFromUrl && (
+              <div className="mb-6">
+                <label className="block text-sm text-gray-400 mb-2">
+                  1. Enter a skill name from this repository:
+                </label>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">
+                    --skill
+                  </span>
+                  <input
+                    type="text"
+                    value={skillInput}
+                    onChange={(e) => setSkillInput(e.target.value)}
+                    placeholder="rag-implementation"
+                    className="w-full bg-black border border-white/20 p-4 pl-20 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none transition-colors"
+                    autoFocus
+                  />
+                </div>
+                <p className="mt-2 text-xs text-gray-600">
+                  Tip: Check the repository for available skills in the skills/
+                  or .cursor/skills/ directory
+                </p>
+              </div>
+            )}
+
+            {/* Step 2: Select a playground repo */}
+            <div className="mb-6">
+              <label className="block text-sm text-gray-400 mb-2">
+                {skillFromUrl ? "1" : "2"}. Select a repository to use the skill
+                on:
+              </label>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {PLAYGROUNDS.map((pg) => {
+                  const isSelected = selectedPlayground?.id === pg.id;
+                  return (
+                    <div
+                      key={pg.id}
+                      onClick={() => setSelectedPlayground(pg)}
+                      className={`
+                        group relative border p-4 transition-all duration-200 cursor-pointer
+                        ${
+                          isSelected
+                            ? "border-orange-500 bg-orange-500/10"
+                            : "border-white/10 bg-black hover:border-white/30 hover:bg-white/5"
+                        }
+                      `}
+                    >
+                      <div className="flex items-start justify-between">
+                        <h3
+                          className={`text-base font-bold mb-1 transition-colors ${
+                            isSelected
+                              ? "text-orange-500"
+                              : "text-white group-hover:text-white"
+                          }`}
+                        >
+                          {pg.title}
+                        </h3>
+                        <a
+                          href={`https://github.com/${pg.owner}/${pg.repo}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className={`
+                            p-1 -m-1 transition-all
+                            ${
+                              isSelected
+                                ? "text-orange-500 hover:text-orange-400"
+                                : "text-gray-600 hover:text-white"
+                            }
+                          `}
+                          aria-label={`View ${pg.title} repository`}
+                        >
+                          <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                          >
+                            <path
+                              d="M4.5 11.5L11.5 4.5M11.5 4.5H6M11.5 4.5V10"
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </a>
+                      </div>
+                      <p className="text-xs text-gray-500">{pg.description}</p>
+                      <div
+                        className={`mt-2 text-[10px] tracking-wider ${
+                          isSelected ? "text-orange-500/70" : "text-gray-600"
+                        }`}
+                      >
+                        {isSelected ? "[ SELECTED ]" : `${pg.owner}/${pg.repo}`}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Boot button */}
+            <button
+              type="submit"
+              disabled={!canBoot}
+              className={`
+                w-full py-6 border text-lg tracking-widest uppercase transition-all
+                ${
+                  canBoot
+                    ? "border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-black"
+                    : "border-white/10 text-white/30 cursor-not-allowed"
+                }
+              `}
+            >
+              {!activeSkill.trim()
+                ? "Enter a skill name"
+                : !selectedPlayground
+                  ? "Select a repository"
+                  : `Boot ${selectedPlayground.title} with ${activeSkill}`}
+            </button>
+          </form>
         )}
 
         {sandboxState.status === "creating" && (
@@ -135,7 +276,7 @@ export function SandboxPage({ owner, repo, skill }: SandboxPageProps) {
           <div className="border border-red-500/50 p-6">
             <p className="text-red-500 mb-4">Error: {sandboxState.error}</p>
             <button
-              onClick={handleBoot}
+              onClick={() => handleBoot()}
               className="px-4 py-2 border border-white/20 hover:border-white transition-colors"
             >
               Retry
