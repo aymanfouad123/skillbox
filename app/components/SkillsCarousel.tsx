@@ -1,11 +1,32 @@
 "use client";
 
+import { useState } from "react";
 import { TOP_SKILLS } from "../data/skills";
 import { SkillCard } from "./SkillCard";
 
+const ITEMS_PER_PAGE = 3;
+const CARD_WIDTH = 256; // w-64 = 16rem = 256px
+const GAP = 16; // gap-4 = 1rem = 16px
+
 export function SkillsCarousel() {
-  // Duplicate skills for seamless infinite scroll
-  const duplicatedSkills = [...TOP_SKILLS, ...TOP_SKILLS];
+  const [startIndex, setStartIndex] = useState(0);
+
+  const canGoBack = startIndex > 0;
+  const canGoForward = startIndex + ITEMS_PER_PAGE < TOP_SKILLS.length;
+
+  const goBack = () => {
+    if (canGoBack) {
+      setStartIndex((prev) => prev - 1);
+    }
+  };
+
+  const goForward = () => {
+    if (canGoForward) {
+      setStartIndex((prev) => prev + 1);
+    }
+  };
+
+  const translateX = -(startIndex * (CARD_WIDTH + GAP));
 
   return (
     <section className="mb-24">
@@ -13,16 +34,31 @@ export function SkillsCarousel() {
         <h2 className="text-sm tracking-widest text-gray-400 uppercase">
           Top Skills
         </h2>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={goBack}
+            disabled={!canGoBack}
+            className="w-8 h-8 border border-white/20 flex items-center justify-center transition-colors enabled:hover:border-white/60 disabled:opacity-20"
+          >
+            ←
+          </button>
+          <button
+            onClick={goForward}
+            disabled={!canGoForward}
+            className="w-8 h-8 border border-white/20 flex items-center justify-center transition-colors enabled:hover:border-white/60 disabled:opacity-20"
+          >
+            →
+          </button>
+        </div>
       </div>
 
-      <div className="relative overflow-hidden">
-        {/* Gradient fade edges */}
-        <div className="absolute left-0 top-0 bottom-0 w-12 bg-gradient-to-r from-black to-transparent z-10 pointer-events-none" />
-        <div className="absolute right-0 top-0 bottom-0 w-12 bg-gradient-to-l from-black to-transparent z-10 pointer-events-none" />
-
-        <div className="flex gap-4 animate-carousel hover:[animation-play-state:paused]">
-          {duplicatedSkills.map((skill, idx) => (
-            <div key={`${skill.rank}-${idx}`} className="flex-shrink-0 w-64">
+      <div className="overflow-hidden">
+        <div
+          className="flex gap-4 transition-transform duration-300 ease-out"
+          style={{ transform: `translateX(${translateX}px)` }}
+        >
+          {TOP_SKILLS.map((skill) => (
+            <div key={skill.rank} className="shrink-0 w-64">
               <SkillCard skill={skill} />
             </div>
           ))}
