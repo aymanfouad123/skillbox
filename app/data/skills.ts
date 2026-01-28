@@ -67,3 +67,18 @@ export const TOP_SKILLS: Skill[] = [
     installs: "1.4K",
   },
 ];
+
+// Sandbox state for tracking sandbox lifecycle
+export interface SandboxState {
+  status: "idle" | "creating" | "ready" | "error";
+  sandboxId?: string;
+  ttydUrl?: string;
+  error?: string;
+}
+
+// Request body for creating a sandbox
+export interface CreateSandboxRequest {
+  owner: string;
+  repo: string;
+  skills: Skill[];
+}
