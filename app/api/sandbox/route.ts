@@ -36,12 +36,12 @@ export async function POST(request: Request) {
     ) {
       return NextResponse.json(
         { error: "Missing required fields" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
     console.log(
-      `Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}...`
+      `Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}...`,
     );
 
     // 1. Create Sandbox with Vercel Sandbox SDK
@@ -52,7 +52,7 @@ export async function POST(request: Request) {
         depth: 1,
       },
       resources: { vcpus: 4 },
-      timeout: ms("5m"), // 5 minutes
+      timeout: ms("3m"), // 3 minutes
       ports: [7681], // TTYD port
       runtime: "node22",
     });
@@ -109,18 +109,9 @@ export async function POST(request: Request) {
     }
     console.log("Skill injection completed");
 
-    // 5. Pre-configure Claude CLI to skip onboarding and accept dangerous permissions
+    // 5. Pre-configure Claude CLI to skip onboarding
     console.log("Setting up Claude CLI configuration...");
     const configPayload = JSON.stringify({
-      hasCompletedOnboarding: true,
-      lastOnboardingVersion: "0.2.200",
-      lastReleaseNotesSeen: "0.2.200",
-      isQualifiedForDataSharing: false,
-      changelogLastFetched: Date.now(),
-    });
-
-    const settingsPayload = JSON.stringify({
-      theme: "dark",
       hasCompletedOnboarding: true,
       autoUpdaterStatus: "disabled",
     });
@@ -130,9 +121,7 @@ export async function POST(request: Request) {
       args: [
         "-c",
         `mkdir -p /home/vercel-sandbox/.claude && ` +
-          `echo '${configPayload}' > /home/vercel-sandbox/.claude.json && ` +
-          `echo '${configPayload}' > /home/vercel-sandbox/.claude/config.json && ` +
-          `echo '${settingsPayload}' > /home/vercel-sandbox/.claude/settings.json`,
+          `echo '${configPayload}' > /home/vercel-sandbox/.claude.json`,
       ],
     });
 
@@ -154,11 +143,7 @@ export async function POST(request: Request) {
           `export FORCE_COLOR=1 && ` +
           `export TERM=xterm-256color && ` +
           `export COLORTERM=truecolor && ` +
-          `export CLAUDE_CODE_SKIP_ONBOARDING=true && ` +
-          `claude config set autoUpdaterStatus disabled 2>/dev/null ; ` +
-          `claude config add allowedTools Edit Bash Read Write 2>/dev/null ; ` +
-          `echo 'yes' | claude -p 'Analyze this repo and specifically the ${skillName} skill I just added.' ; ` +
-          `exec bash` +
+          `claude` +
           `"`,
       ],
       detached: true,
@@ -206,8 +191,10 @@ export async function POST(request: Request) {
       }
     }
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to initialize" },
-      { status: 500 }
+      {
+        error: error instanceof Error ? error.message : "Failed to initialize",
+      },
+      { status: 500 },
     );
   }
 }
@@ -232,7 +219,7 @@ export async function DELETE(request: Request) {
     console.error("Failed to stop sandbox:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
