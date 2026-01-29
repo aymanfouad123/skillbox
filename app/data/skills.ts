@@ -117,6 +117,9 @@ export const PLAYGROUNDS: Playground[] = [
   },
 ];
 
+// CLI provider options for sandbox
+export type CLIProvider = "opencode" | "claude";
+
 // Request body for creating a sandbox
 export interface CreateSandboxRequest {
   // The skill source (from URL)
@@ -126,6 +129,8 @@ export interface CreateSandboxRequest {
   // The target repo to clone and use the skill on
   targetOwner: string;
   targetRepo: string;
-  // Anthropic API key for Claude CLI
-  anthropicApiKey: string;
+  // CLI provider to use (opencode is free, claude requires API key)
+  cliProvider: CLIProvider;
+  // Anthropic API key - required only when cliProvider is "claude"
+  anthropicApiKey?: string;
 }
