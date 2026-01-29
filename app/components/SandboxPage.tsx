@@ -1,10 +1,16 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { SandboxState, PLAYGROUNDS, Playground } from "../data/skills";
+import { Github } from "lucide-react";
+import {
+  SandboxState,
+  PLAYGROUNDS,
+  Playground,
+  CLIProvider,
+} from "../data/skills";
 
 const API_KEY_STORAGE_KEY = "skillbox_anthropic_api_key";
-const SESSION_DURATION_SECONDS = 180; // 3 minutes
+const SESSION_DURATION_SECONDS = 300; // 5 minutes
 
 interface SandboxPageProps {
   owner: string;
@@ -24,6 +30,7 @@ export function SandboxPage({
   const [selectedPlayground, setSelectedPlayground] =
     useState<Playground | null>(null);
   const [customRepoUrl, setCustomRepoUrl] = useState("");
+  const [cliProvider, setCLIProvider] = useState<CLIProvider>("opencode");
   const [apiKey, setApiKey] = useState("");
   const [rememberApiKey, setRememberApiKey] = useState(false);
   const [isKilling, setIsKilling] = useState(false);
@@ -119,8 +126,12 @@ export function SandboxPage({
 
   const targetOwner = selectedPlayground?.owner ?? customRepo?.owner;
   const targetRepo = selectedPlayground?.repo ?? customRepo?.repo;
+  // OpenCode doesn't require API key, Claude does
   const canBoot =
-    activeSkill.trim() && targetOwner && targetRepo && apiKey.trim();
+    activeSkill.trim() &&
+    targetOwner &&
+    targetRepo &&
+    (cliProvider === "opencode" || apiKey.trim());
 
   const handleBoot = async () => {
     if (!canBoot) return;
@@ -137,7 +148,8 @@ export function SandboxPage({
           skillName: activeSkill.trim(),
           targetOwner,
           targetRepo,
-          anthropicApiKey: apiKey.trim(),
+          cliProvider,
+          ...(cliProvider === "claude" && { anthropicApiKey: apiKey.trim() }),
         }),
       });
 
@@ -163,10 +175,11 @@ export function SandboxPage({
   const getButtonText = () => {
     if (!activeSkill.trim()) return "Enter a skill name";
     if (!targetOwner || !targetRepo) return "Select a repository";
-    if (!apiKey.trim()) return "Enter your API key";
+    if (cliProvider === "claude" && !apiKey.trim()) return "Enter your API key";
     const repoName =
       selectedPlayground?.title ?? `${targetOwner}/${targetRepo}`;
-    return `Boot ${repoName} with ${activeSkill}`;
+    const cliName = cliProvider === "opencode" ? "OpenCode" : "Claude";
+    return `Boot ${repoName} with ${cliName}`;
   };
 
   return (
@@ -174,17 +187,31 @@ export function SandboxPage({
       <div className="max-w-5xl mx-auto pt-12 pb-24 px-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
-          <a href="/" className="flex items-center gap-4 hover:opacity-80">
-            <div className="w-8 h-8 border border-white flex items-center justify-center">
-              <div className="w-4 h-4 bg-orange-500 animate-pulse" />
-            </div>
-            <h1 className="text-2xl font-bold tracking-tighter">SKILLBOX.SH</h1>
-          </a>
+          <div className="flex items-center gap-4">
+            <a href="/" className="flex items-center gap-4 hover:opacity-80">
+              <div className="w-8 h-8 border border-white flex items-center justify-center">
+                <div className="w-4 h-4 bg-orange-500 animate-pulse" />
+              </div>
+              <h1 className="text-2xl font-bold tracking-tighter">
+                SKILLBOX.SH
+              </h1>
+            </a>
+            <a
+              href="https://github.com/aymanfouad123/skillbox"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-2 mx-2 sm:px-3 py-1.5 border border-white/20 hover:border-yellow-500/50 hover:bg-yellow-500/10 transition-all text-sm text-gray-400 hover:text-yellow-500"
+            >
+              <Github className="w-4 h-4" />
+              <span className="hidden sm:inline">Star on GitHub</span>
+              <span className="sm:hidden">Star</span>
+            </a>
+          </div>
           <a
             href={`https://github.com/${owner}/${repo}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-gray-400 hover:text-white transition-colors"
+            className="text-gray-400 hover:text-white transition-colors text-sm sm:text-base truncate max-w-[150px] sm:max-w-none"
           >
             {owner}/{repo} ↗
           </a>
@@ -317,57 +344,129 @@ export function SandboxPage({
               </div>
             </div>
 
-            {/* Anthropic API Key */}
+            {/* CLI Provider Selection */}
             <div className="mb-6">
               <label className="block text-sm text-gray-400 mb-2">
-                2. Enter your Anthropic API key:
+                2. Choose your AI coding assistant:
               </label>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-ant-xxxxx..."
-                className="w-full bg-black border border-white/20 p-4 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none font-mono"
-              />
-              <div className="mt-3 flex items-center justify-between">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={rememberApiKey}
-                    onChange={(e) => setRememberApiKey(e.target.checked)}
-                    className="w-4 h-4 bg-black border border-white/20 appearance-none cursor-pointer checked:bg-orange-500 checked:border-orange-500 relative after:content-[''] after:absolute after:hidden checked:after:block after:left-[5px] after:top-[2px] after:w-[4px] after:h-[8px] after:border-black after:border-r-2 after:border-b-2 after:rotate-45"
-                  />
-                  <span className="text-xs text-gray-500">
-                    Remember my API key
-                  </span>
-                </label>
-                {rememberApiKey && apiKey && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setApiKey("");
-                      setRememberApiKey(false);
-                    }}
-                    className="text-xs text-red-500/70 hover:text-red-500"
-                  >
-                    Clear saved key
-                  </button>
-                )}
-              </div>
-              <p className="mt-2 text-xs text-gray-600">
-                {rememberApiKey
-                  ? "Stored locally in your browser."
-                  : "Your API key is sent securely to the sandbox."}{" "}
-                <a
-                  href="https://console.anthropic.com/settings/keys"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-orange-500/70 hover:text-orange-500"
+              <div className="grid grid-cols-2 gap-4">
+                {/* OpenCode Option */}
+                <div
+                  onClick={() => setCLIProvider("opencode")}
+                  className={`border p-4 cursor-pointer transition-colors ${
+                    cliProvider === "opencode"
+                      ? "border-green-500 bg-green-500/10"
+                      : "border-white/10 hover:border-white/30"
+                  }`}
                 >
-                  Get an API key
-                </a>
-              </p>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3
+                      className={`text-base font-bold ${cliProvider === "opencode" ? "text-green-500" : "text-white"}`}
+                    >
+                      OpenCode
+                    </h3>
+                    <span className="text-[10px] px-2 py-0.5 bg-green-500/20 text-green-400 border border-green-500/30">
+                      FREE
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Free AI coding CLI. No API key required.
+                  </p>
+                  <div
+                    className={`mt-2 text-[10px] tracking-wider ${cliProvider === "opencode" ? "text-green-500/70" : "text-gray-600"}`}
+                  >
+                    {cliProvider === "opencode"
+                      ? "[ SELECTED ]"
+                      : "gpt-5-nano model"}
+                  </div>
+                </div>
+
+                {/* Claude Option */}
+                <div
+                  onClick={() => setCLIProvider("claude")}
+                  className={`border p-4 cursor-pointer transition-colors ${
+                    cliProvider === "claude"
+                      ? "border-orange-500 bg-orange-500/10"
+                      : "border-white/10 hover:border-white/30"
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <h3
+                      className={`text-base font-bold ${cliProvider === "claude" ? "text-orange-500" : "text-white"}`}
+                    >
+                      Claude
+                    </h3>
+                    <span className="text-[10px] px-2 py-0.5 bg-orange-500/20 text-orange-400 border border-orange-500/30">
+                      API KEY
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Anthropic Claude CLI. Requires API key.
+                  </p>
+                  <div
+                    className={`mt-2 text-[10px] tracking-wider ${cliProvider === "claude" ? "text-orange-500/70" : "text-gray-600"}`}
+                  >
+                    {cliProvider === "claude"
+                      ? "[ SELECTED ]"
+                      : "claude-sonnet-4"}
+                  </div>
+                </div>
+              </div>
             </div>
+
+            {/* Anthropic API Key - Only shown for Claude */}
+            {cliProvider === "claude" && (
+              <div className="mb-6">
+                <label className="block text-sm text-gray-400 mb-2">
+                  3. Enter your Anthropic API key:
+                </label>
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="sk-ant-xxxxx..."
+                  className="w-full bg-black border border-white/20 p-4 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none font-mono"
+                />
+                <div className="mt-3 flex items-center justify-between">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={rememberApiKey}
+                      onChange={(e) => setRememberApiKey(e.target.checked)}
+                      className="w-4 h-4 bg-black border border-white/20 appearance-none cursor-pointer checked:bg-orange-500 checked:border-orange-500 relative after:content-[''] after:absolute after:hidden checked:after:block after:left-[5px] after:top-[2px] after:w-[4px] after:h-[8px] after:border-black after:border-r-2 after:border-b-2 after:rotate-45"
+                    />
+                    <span className="text-xs text-gray-500">
+                      Remember my API key
+                    </span>
+                  </label>
+                  {rememberApiKey && apiKey && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setApiKey("");
+                        setRememberApiKey(false);
+                      }}
+                      className="text-xs text-red-500/70 hover:text-red-500"
+                    >
+                      Clear saved key
+                    </button>
+                  )}
+                </div>
+                <p className="mt-2 text-xs text-gray-600">
+                  {rememberApiKey
+                    ? "Stored locally in your browser."
+                    : "Your API key is sent securely to the sandbox."}{" "}
+                  <a
+                    href="https://console.anthropic.com/settings/keys"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-orange-500/70 hover:text-orange-500"
+                  >
+                    Get an API key
+                  </a>
+                </p>
+              </div>
+            )}
 
             {/* Boot button */}
             <button
