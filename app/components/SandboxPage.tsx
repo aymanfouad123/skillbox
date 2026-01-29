@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { SandboxState, PLAYGROUNDS, Playground } from "../data/skills";
 
 const API_KEY_STORAGE_KEY = "skillbox_anthropic_api_key";
+const SESSION_DURATION_SECONDS = 180; // 3 minutes
 
 interface SandboxPageProps {
   owner: string;
@@ -19,17 +20,15 @@ export function SandboxPage({
   const [sandboxState, setSandboxState] = useState<SandboxState>({
     status: "idle",
   });
-
-  // Local state for skill input when not provided in URL
   const [skillInput, setSkillInput] = useState("");
-
-  // Selected playground repo to clone
   const [selectedPlayground, setSelectedPlayground] =
     useState<Playground | null>(null);
-
-  // Anthropic API key for Claude CLI
+  const [customRepoUrl, setCustomRepoUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [rememberApiKey, setRememberApiKey] = useState(false);
+  const [isKilling, setIsKilling] = useState(false);
+  const [timeRemaining, setTimeRemaining] = useState(SESSION_DURATION_SECONDS);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Load API key from localStorage on mount
   useEffect(() => {
@@ -40,69 +39,91 @@ export function SandboxPage({
     }
   }, []);
 
-  // Save or clear API key in localStorage when checkbox changes
-  const handleRememberChange = (checked: boolean) => {
-    setRememberApiKey(checked);
-    if (checked && apiKey.trim()) {
+  // Sync API key to localStorage
+  useEffect(() => {
+    if (rememberApiKey && apiKey.trim()) {
       localStorage.setItem(API_KEY_STORAGE_KEY, apiKey.trim());
-    } else if (!checked) {
+    } else if (!rememberApiKey) {
       localStorage.removeItem(API_KEY_STORAGE_KEY);
     }
-  };
+  }, [apiKey, rememberApiKey]);
 
-  // Update localStorage when API key changes (if remember is checked)
-  const handleApiKeyChange = (value: string) => {
-    setApiKey(value);
-    if (rememberApiKey && value.trim()) {
-      localStorage.setItem(API_KEY_STORAGE_KEY, value.trim());
-    }
-  };
-
-  // Clear saved API key
-  const handleClearSavedKey = () => {
-    localStorage.removeItem(API_KEY_STORAGE_KEY);
-    setApiKey("");
-    setRememberApiKey(false);
-  };
-
-  // Track if we're killing the sandbox
-  const [isKilling, setIsKilling] = useState(false);
-
-  // Kill the sandbox session
-  const handleKillSandbox = async () => {
+  const handleKillSandbox = useCallback(async () => {
     if (!sandboxState.sandboxId || isKilling) return;
 
     setIsKilling(true);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
     try {
-      const response = await fetch("/api/sandbox", {
+      await fetch("/api/sandbox", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sandboxId: sandboxState.sandboxId }),
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        console.error("Failed to kill sandbox:", error);
-      }
     } catch (error) {
       console.error("Failed to kill sandbox:", error);
     } finally {
-      // Reset to idle state regardless of success/failure
       setSandboxState({ status: "idle" });
+      setTimeRemaining(SESSION_DURATION_SECONDS);
       setIsKilling(false);
     }
-  };
+  }, [sandboxState.sandboxId, isKilling]);
 
-  // The actual skill to use - either from URL or user input
-  const activeSkill = skillFromUrl || skillInput;
-
-  // Check if ready to boot (has skill, selected repo, and API key)
-  const canBoot = activeSkill.trim() && selectedPlayground && apiKey.trim();
-
-  const handleBoot = async () => {
-    if (!activeSkill.trim() || !selectedPlayground || !apiKey.trim()) {
+  // Session timer - countdown and auto-kill
+  useEffect(() => {
+    if (sandboxState.status !== "ready") {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
       return;
     }
+
+    setTimeRemaining(SESSION_DURATION_SECONDS);
+    timerRef.current = setInterval(() => {
+      setTimeRemaining((prev) => {
+        if (prev <= 1) {
+          handleKillSandbox();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [sandboxState.status, handleKillSandbox]);
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+
+  const activeSkill = skillFromUrl || skillInput;
+
+  // Parse "owner/repo" or "https://github.com/owner/repo" formats
+  const customRepo = (() => {
+    const trimmed = customRepoUrl.trim();
+    if (!trimmed) return null;
+    const match = trimmed.match(/(?:github\.com\/)?([^\/]+)\/([^\/]+)/);
+    if (!match) return null;
+    return { owner: match[1], repo: match[2].replace(/\.git$/, "") };
+  })();
+
+  const targetOwner = selectedPlayground?.owner ?? customRepo?.owner;
+  const targetRepo = selectedPlayground?.repo ?? customRepo?.repo;
+  const canBoot =
+    activeSkill.trim() && targetOwner && targetRepo && apiKey.trim();
+
+  const handleBoot = async () => {
+    if (!canBoot) return;
 
     setSandboxState({ status: "creating" });
 
@@ -111,14 +132,11 @@ export function SandboxPage({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          // Skill source (from URL)
           skillOwner: owner,
           skillRepo: repo,
           skillName: activeSkill.trim(),
-          // Target repo to clone
-          targetOwner: selectedPlayground.owner,
-          targetRepo: selectedPlayground.repo,
-          // Anthropic API key
+          targetOwner,
+          targetRepo,
           anthropicApiKey: apiKey.trim(),
         }),
       });
@@ -142,28 +160,26 @@ export function SandboxPage({
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    handleBoot();
+  const getButtonText = () => {
+    if (!activeSkill.trim()) return "Enter a skill name";
+    if (!targetOwner || !targetRepo) return "Select a repository";
+    if (!apiKey.trim()) return "Enter your API key";
+    const repoName =
+      selectedPlayground?.title ?? `${targetOwner}/${targetRepo}`;
+    return `Boot ${repoName} with ${activeSkill}`;
   };
 
   return (
     <main className="min-h-screen bg-black text-white font-mono">
-      <div className="max-w-5xl mx-auto pt-8 px-6">
+      <div className="max-w-5xl mx-auto pt-12 pb-24 px-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-4">
-            <a href="/" className="flex items-center gap-4 hover:opacity-80">
-              <div className="w-8 h-8 border border-white flex items-center justify-center">
-                <div className="w-4 h-4 bg-orange-500 animate-pulse" />
-              </div>
-              <h1 className="text-2xl font-bold tracking-tighter">
-                SKILLBOX.SH
-              </h1>
-            </a>
-          </div>
-
-          {/* Repository info */}
+          <a href="/" className="flex items-center gap-4 hover:opacity-80">
+            <div className="w-8 h-8 border border-white flex items-center justify-center">
+              <div className="w-4 h-4 bg-orange-500 animate-pulse" />
+            </div>
+            <h1 className="text-2xl font-bold tracking-tighter">SKILLBOX.SH</h1>
+          </a>
           <a
             href={`https://github.com/${owner}/${repo}`}
             target="_blank"
@@ -177,7 +193,9 @@ export function SandboxPage({
         {/* Skill info card */}
         <div className="border border-white/20 p-6 mb-6">
           <div className="text-orange-400/80 text-sm tracking-widest uppercase mb-2">
-            {activeSkill ? "Skill Sandbox" : "Select a Skill"}
+            {activeSkill
+              ? "Isolated Laboratory for AI Agent Skills"
+              : "Select a Skill"}
           </div>
           <h2 className="text-3xl font-bold mb-2">{activeSkill || repo}</h2>
           <p className="text-gray-400">
@@ -200,12 +218,17 @@ export function SandboxPage({
 
         {/* Sandbox setup area - shown when idle */}
         {sandboxState.status === "idle" && (
-          <form onSubmit={handleSubmit}>
-            {/* Step 1: Skill input (only if not provided in URL) */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleBoot();
+            }}
+          >
+            {/* Skill input (only if not provided in URL) */}
             {!skillFromUrl && (
               <div className="mb-6">
                 <label className="block text-sm text-gray-400 mb-2">
-                  1. Enter a skill name from this repository:
+                  Enter a skill name from this repository:
                 </label>
                 <div className="relative">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">
@@ -216,22 +239,21 @@ export function SandboxPage({
                     value={skillInput}
                     onChange={(e) => setSkillInput(e.target.value)}
                     placeholder="rag-implementation"
-                    className="w-full bg-black border border-white/20 p-4 pl-20 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none transition-colors"
+                    className="w-full bg-black border border-white/20 p-4 pl-20 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none"
                     autoFocus
                   />
                 </div>
                 <p className="mt-2 text-xs text-gray-600">
-                  Tip: Check the repository for available skills in the skills/
-                  or .cursor/skills/ directory
+                  Tip: Check the repository for available skills in skills/ or
+                  .cursor/skills/
                 </p>
               </div>
             )}
 
-            {/* Step 2: Select a playground repo */}
+            {/* Select a playground repo */}
             <div className="mb-6">
               <label className="block text-sm text-gray-400 mb-2">
-                {skillFromUrl ? "1" : "2"}. Select a repository to use the skill
-                on:
+                1. Select a repository to use the skill on:
               </label>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {PLAYGROUNDS.map((pg) => {
@@ -240,22 +262,15 @@ export function SandboxPage({
                     <div
                       key={pg.id}
                       onClick={() => setSelectedPlayground(pg)}
-                      className={`
-                        group relative border p-4 transition-all duration-200 cursor-pointer
-                        ${
-                          isSelected
-                            ? "border-orange-500 bg-orange-500/10"
-                            : "border-white/10 bg-black hover:border-white/30 hover:bg-white/5"
-                        }
-                      `}
+                      className={`border p-4 cursor-pointer transition-colors ${
+                        isSelected
+                          ? "border-orange-500 bg-orange-500/10"
+                          : "border-white/10 hover:border-white/30"
+                      }`}
                     >
                       <div className="flex items-start justify-between">
                         <h3
-                          className={`text-base font-bold mb-1 transition-colors ${
-                            isSelected
-                              ? "text-orange-500"
-                              : "text-white group-hover:text-white"
-                          }`}
+                          className={`text-base font-bold mb-1 ${isSelected ? "text-orange-500" : "text-white"}`}
                         >
                           {pg.title}
                         </h3>
@@ -264,38 +279,14 @@ export function SandboxPage({
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className={`
-                            p-1 -m-1 transition-all
-                            ${
-                              isSelected
-                                ? "text-orange-500 hover:text-orange-400"
-                                : "text-gray-600 hover:text-white"
-                            }
-                          `}
-                          aria-label={`View ${pg.title} repository`}
+                          className="text-gray-600 hover:text-white"
                         >
-                          <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            xmlns="http://www.w3.org/2000/svg"
-                          >
-                            <path
-                              d="M4.5 11.5L11.5 4.5M11.5 4.5H6M11.5 4.5V10"
-                              stroke="currentColor"
-                              strokeWidth="1.5"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </svg>
+                          ↗
                         </a>
                       </div>
                       <p className="text-xs text-gray-500">{pg.description}</p>
                       <div
-                        className={`mt-2 text-[10px] tracking-wider ${
-                          isSelected ? "text-orange-500/70" : "text-gray-600"
-                        }`}
+                        className={`mt-2 text-[10px] tracking-wider ${isSelected ? "text-orange-500/70" : "text-gray-600"}`}
                       >
                         {isSelected ? "[ SELECTED ]" : `${pg.owner}/${pg.repo}`}
                       </div>
@@ -303,54 +294,69 @@ export function SandboxPage({
                   );
                 })}
               </div>
-            </div>
 
-            {/* Step 3: Anthropic API Key */}
-            <div className="mb-6">
-              <label className="block text-sm text-gray-400 mb-2">
-                {skillFromUrl ? "2" : "3"}. Enter your Anthropic API key:
-              </label>
-              <div className="relative">
+              {/* Custom GitHub URL input */}
+              <div className="mt-4">
+                <div className="text-center text-xs text-gray-500 mb-3 tracking-wider">
+                  — OR ENTER A PUBLIC GITHUB URL —
+                </div>
                 <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => handleApiKeyChange(e.target.value)}
-                  placeholder="sk-ant-xxxxx..."
-                  className="w-full bg-black border border-white/20 p-4 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none transition-colors font-mono"
+                  type="text"
+                  value={customRepoUrl}
+                  onChange={(e) => {
+                    setCustomRepoUrl(e.target.value);
+                    if (e.target.value.trim()) setSelectedPlayground(null);
+                  }}
+                  placeholder="https://github.com/owner/repo"
+                  className={`w-full bg-black border p-4 text-white placeholder:text-gray-600 focus:outline-none font-mono ${
+                    customRepoUrl.trim() && !selectedPlayground
+                      ? "border-orange-500"
+                      : "border-white/20 focus:border-orange-500"
+                  }`}
                 />
               </div>
+            </div>
 
-              {/* Remember API Key checkbox */}
+            {/* Anthropic API Key */}
+            <div className="mb-6">
+              <label className="block text-sm text-gray-400 mb-2">
+                2. Enter your Anthropic API key:
+              </label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-ant-xxxxx..."
+                className="w-full bg-black border border-white/20 p-4 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none font-mono"
+              />
               <div className="mt-3 flex items-center justify-between">
-                <label className="flex items-center gap-2 cursor-pointer group">
+                <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={rememberApiKey}
-                    onChange={(e) => handleRememberChange(e.target.checked)}
-                    className="w-4 h-4 bg-black border border-white/20 rounded-none appearance-none cursor-pointer checked:bg-orange-500 checked:border-orange-500 relative
-                      after:content-[''] after:absolute after:hidden checked:after:block
-                      after:left-[5px] after:top-[2px] after:w-[4px] after:h-[8px]
-                      after:border-black after:border-r-2 after:border-b-2 after:rotate-45"
+                    onChange={(e) => setRememberApiKey(e.target.checked)}
+                    className="w-4 h-4 bg-black border border-white/20 appearance-none cursor-pointer checked:bg-orange-500 checked:border-orange-500 relative after:content-[''] after:absolute after:hidden checked:after:block after:left-[5px] after:top-[2px] after:w-[4px] after:h-[8px] after:border-black after:border-r-2 after:border-b-2 after:rotate-45"
                   />
-                  <span className="text-xs text-gray-500 group-hover:text-gray-400 transition-colors">
+                  <span className="text-xs text-gray-500">
                     Remember my API key
                   </span>
                 </label>
-
                 {rememberApiKey && apiKey && (
                   <button
                     type="button"
-                    onClick={handleClearSavedKey}
-                    className="text-xs text-red-500/70 hover:text-red-500 transition-colors"
+                    onClick={() => {
+                      setApiKey("");
+                      setRememberApiKey(false);
+                    }}
+                    className="text-xs text-red-500/70 hover:text-red-500"
                   >
                     Clear saved key
                   </button>
                 )}
               </div>
-
               <p className="mt-2 text-xs text-gray-600">
                 {rememberApiKey
-                  ? "Stored locally in your browser. Never sent to our servers."
+                  ? "Stored locally in your browser."
                   : "Your API key is sent securely to the sandbox."}{" "}
                 <a
                   href="https://console.anthropic.com/settings/keys"
@@ -367,22 +373,13 @@ export function SandboxPage({
             <button
               type="submit"
               disabled={!canBoot}
-              className={`
-                w-full py-6 border text-lg tracking-widest uppercase transition-all
-                ${
-                  canBoot
-                    ? "border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-black"
-                    : "border-white/10 text-white/30 cursor-not-allowed"
-                }
-              `}
+              className={`w-full mt-6 py-6 border text-lg tracking-widest uppercase ${
+                canBoot
+                  ? "border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-black"
+                  : "border-white/10 text-white/30 cursor-not-allowed"
+              }`}
             >
-              {!activeSkill.trim()
-                ? "Enter a skill name"
-                : !selectedPlayground
-                  ? "Select a repository"
-                  : !apiKey.trim()
-                    ? "Enter your API key"
-                    : `Boot ${selectedPlayground.title} with ${activeSkill}`}
+              {getButtonText()}
             </button>
           </form>
         )}
@@ -421,25 +418,19 @@ export function SandboxPage({
                 Sandbox ID: {sandboxState.sandboxId}
               </span>
               <div className="flex items-center gap-4">
-                <a
-                  href={sandboxState.ttydUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-orange-400 hover:text-orange-300"
+                <span
+                  className={`text-xs font-mono ${timeRemaining <= 30 ? "text-red-500" : "text-orange-400"}`}
                 >
-                  Open in New Tab ↗
-                </a>
+                  {formatTime(timeRemaining)}
+                </span>
                 <button
                   onClick={handleKillSandbox}
                   disabled={isKilling}
-                  className={`
-                    text-xs px-3 py-1 border transition-colors
-                    ${
-                      isKilling
-                        ? "border-gray-600 text-gray-600 cursor-not-allowed"
-                        : "border-red-500/50 text-red-500 hover:bg-red-500 hover:text-black"
-                    }
-                  `}
+                  className={`text-xs px-3 py-1 border ${
+                    isKilling
+                      ? "border-gray-600 text-gray-600 cursor-not-allowed"
+                      : "border-red-500/50 text-red-500 hover:bg-red-500 hover:text-black"
+                  }`}
                 >
                   {isKilling ? "Killing..." : "Kill Session"}
                 </button>
