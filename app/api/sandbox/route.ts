@@ -130,6 +130,8 @@ export async function POST(request: Request) {
     await sandbox.runCommand({
       cmd: "bash",
       args: [
+        "--norc",
+        "--noprofile",
         "-c",
         `cd /vercel/sandbox && ` +
           `${ttydPath} -p 7681 -W -i 0.0.0.0 ` +
@@ -138,12 +140,14 @@ export async function POST(request: Request) {
           `--client-option autoReconnect=true ` +
           `-t fontSize=14 ` +
           `-t 'theme={"background":"#0a0a0a"}' ` +
-          `bash -c "` +
-          `export ANTHROPIC_API_KEY='${anthropicApiKey}' && ` +
-          `export FORCE_COLOR=1 && ` +
-          `export TERM=xterm-256color && ` +
-          `export COLORTERM=truecolor && ` +
-          `clear && exec claude` +
+          `bash --norc --noprofile -c "` +
+          `export ANTHROPIC_API_KEY='${anthropicApiKey}' ` +
+          `FORCE_COLOR=1 ` +
+          `TERM=xterm-256color ` +
+          `COLORTERM=truecolor ` +
+          `EDITOR=cat ` +
+          `VISUAL=cat && ` +
+          `exec claude` +
           `"`,
       ],
       detached: true,
