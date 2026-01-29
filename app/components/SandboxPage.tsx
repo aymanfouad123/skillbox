@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { SandboxState, PLAYGROUNDS, Playground } from "../data/skills";
 
 const API_KEY_STORAGE_KEY = "skillbox_anthropic_api_key";
+const SESSION_DURATION_SECONDS = 180; // 3 minutes
 
 interface SandboxPageProps {
   owner: string;
@@ -26,6 +27,8 @@ export function SandboxPage({
   const [apiKey, setApiKey] = useState("");
   const [rememberApiKey, setRememberApiKey] = useState(false);
   const [isKilling, setIsKilling] = useState(false);
+  const [timeRemaining, setTimeRemaining] = useState(SESSION_DURATION_SECONDS);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Load API key from localStorage on mount
   useEffect(() => {
@@ -45,10 +48,14 @@ export function SandboxPage({
     }
   }, [apiKey, rememberApiKey]);
 
-  const handleKillSandbox = async () => {
+  const handleKillSandbox = useCallback(async () => {
     if (!sandboxState.sandboxId || isKilling) return;
 
     setIsKilling(true);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
     try {
       await fetch("/api/sandbox", {
         method: "DELETE",
@@ -59,8 +66,44 @@ export function SandboxPage({
       console.error("Failed to kill sandbox:", error);
     } finally {
       setSandboxState({ status: "idle" });
+      setTimeRemaining(SESSION_DURATION_SECONDS);
       setIsKilling(false);
     }
+  }, [sandboxState.sandboxId, isKilling]);
+
+  // Session timer - countdown and auto-kill
+  useEffect(() => {
+    if (sandboxState.status !== "ready") {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      return;
+    }
+
+    setTimeRemaining(SESSION_DURATION_SECONDS);
+    timerRef.current = setInterval(() => {
+      setTimeRemaining((prev) => {
+        if (prev <= 1) {
+          handleKillSandbox();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [sandboxState.status, handleKillSandbox]);
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
   const activeSkill = skillFromUrl || skillInput;
@@ -375,14 +418,11 @@ export function SandboxPage({
                 Sandbox ID: {sandboxState.sandboxId}
               </span>
               <div className="flex items-center gap-4">
-                <a
-                  href={sandboxState.ttydUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-orange-400 hover:text-orange-300"
+                <span
+                  className={`text-xs font-mono ${timeRemaining <= 30 ? "text-red-500" : "text-orange-400"}`}
                 >
-                  Open in New Tab ↗
-                </a>
+                  {formatTime(timeRemaining)}
+                </span>
                 <button
                   onClick={handleKillSandbox}
                   disabled={isKilling}

@@ -143,7 +143,7 @@ export async function POST(request: Request) {
           `export FORCE_COLOR=1 && ` +
           `export TERM=xterm-256color && ` +
           `export COLORTERM=truecolor && ` +
-          `claude` +
+          `clear && exec claude` +
           `"`,
       ],
       detached: true,
