@@ -103,14 +103,20 @@ export async function POST(request: Request) {
     }
     console.log("Skill injection completed");
 
-    // 7. Pre-configure Claude CLI to skip onboarding (don't set primaryApiKey - use env var only)
+    // 7. Pre-configure Claude CLI to skip onboarding and accept dangerous permissions
     console.log("Setting up Claude CLI configuration...");
     const configPayload = JSON.stringify({
       hasCompletedOnboarding: true,
-      lastOnboardingVersion: "0.2.107",
-      lastReleaseNotesSeen: "0.2.107",
+      lastOnboardingVersion: "0.2.200",
+      lastReleaseNotesSeen: "0.2.200",
       isQualifiedForDataSharing: false,
-      changelogLastFetched: 1000000000000,
+      changelogLastFetched: Date.now(),
+    });
+
+    const settingsPayload = JSON.stringify({
+      theme: "dark",
+      hasCompletedOnboarding: true,
+      autoUpdaterStatus: "disabled",
     });
 
     await runCommand(
@@ -118,22 +124,28 @@ export async function POST(request: Request) {
       `mkdir -p /home/user/.claude && ` +
       `echo '${configPayload}' > /home/user/.claude.json && ` +
       `echo '${configPayload}' > /home/user/.claude/config.json && ` +
-      `echo '{"theme":"dark","hasCompletedOnboarding":true,"autoUpdaterStatus":"disabled"}' > /home/user/.claude/settings.json`
+      `echo '${settingsPayload}' > /home/user/.claude/settings.json`
     );
 
-    // 8. Launch Claude with Color support and Persistent Connection
-    console.log("Launching Claude Agent in High-Performance Mode...");
+    // 8. Launch ttyd with Claude CLI
+    console.log("Launching Claude Agent...");
     await sbx.commands.run(
       `cd /home/user/project && ` +
-      `${ttydPath} -p 7681 -W -i 0.0.0.0 -t fontSize=14 -t 'theme={"background":"#1a1a1a"}' ` +
+      `${ttydPath} -p 7681 -W -i 0.0.0.0 ` +
+      `--ping-interval 5 ` +
+      `--client-option reconnect=3 ` +
+      `--client-option autoReconnect=true ` +
+      `-t fontSize=14 ` +
+      `-t 'theme={"background":"#0a0a0a"}' ` +
       `bash -c "` +
         `export ANTHROPIC_API_KEY='${anthropicApiKey}' && ` +
         `export FORCE_COLOR=1 && ` +
         `export TERM=xterm-256color && ` +
         `export COLORTERM=truecolor && ` +
         `export CLAUDE_CODE_SKIP_ONBOARDING=true && ` +
-        `claude config add allowedTools Edit Bash && ` +
-        `claude --dangerously-skip-permissions 'Analyze this repo and specifically the ${skillName} skill I just added.' && ` +
+        `claude config set autoUpdaterStatus disabled 2>/dev/null ; ` +
+        `claude config add allowedTools Edit Bash Read Write 2>/dev/null ; ` +
+        `echo 'yes' | claude -p 'Analyze this repo and specifically the ${skillName} skill I just added.' ; ` +
         `exec bash` +
       `"`,
       { background: true }
@@ -149,12 +161,12 @@ export async function POST(request: Request) {
           break;
         }
       } catch {
-        // Port not ready yet, wait and retry
+        // Port not ready yet
       }
       await new Promise(r => setTimeout(r, 1000));
     }
 
-    if (!ready) console.warn("TTYD readiness check timed out but returning URL anyway.");
+    if (!ready) console.warn("TTYD timed out but returning URL anyway.");
 
     // Give TTYD and Claude additional time to fully initialize
     await new Promise(resolve => setTimeout(resolve, 3000));
