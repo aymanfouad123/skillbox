@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Github, Star } from "lucide-react";
+import { Github } from "lucide-react";
 import { SkillsCarousel } from "./components/SkillsCarousel";
 import { PlaygroundBoxes } from "./components/PlaygroundBoxes";
 
@@ -42,7 +42,8 @@ export default function Home() {
             className="flex items-center gap-2 px-3 py-1.5 border border-white/20 hover:border-yellow-500/50 hover:bg-yellow-500/10 transition-all text-sm text-gray-400 hover:text-yellow-500"
           >
             <Github className="w-4 h-4" />
-            Star on GitHub
+            <span className="hidden sm:inline">Star on GitHub</span>
+            <span className="sm:hidden">Star</span>
           </a>
         </div>
 
