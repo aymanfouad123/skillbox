@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { Github, Star } from "lucide-react";
 import { SkillsCarousel } from "./components/SkillsCarousel";
 import { PlaygroundBoxes } from "./components/PlaygroundBoxes";
 
@@ -27,11 +28,22 @@ export default function Home() {
 
       <div className="max-w-4xl mx-auto pt-16 px-6 relative z-10">
         {/* Logo/Brand */}
-        <div className="flex items-center gap-4 mb-12">
-          <div className="w-8 h-8 border border-white flex items-center justify-center">
-            <div className="w-4 h-4 bg-accent animate-pulse" />
+        <div className="flex items-center justify-between mb-12">
+          <div className="flex items-center gap-4">
+            <div className="w-8 h-8 border border-white flex items-center justify-center">
+              <div className="w-4 h-4 bg-accent animate-pulse" />
+            </div>
+            <h1 className="text-2xl font-bold tracking-tighter">SKILLBOX.SH</h1>
           </div>
-          <h1 className="text-2xl font-bold tracking-tighter">SKILLBOX.SH</h1>
+          <a
+            href="https://github.com/aymanfouad123/skillbox"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 px-3 py-1.5 border border-white/20 hover:border-yellow-500/50 hover:bg-yellow-500/10 transition-all text-sm text-gray-400 hover:text-yellow-500"
+          >
+            <Github className="w-4 h-4" />
+            Star on GitHub
+          </a>
         </div>
 
         {/* The Action Hook */}
