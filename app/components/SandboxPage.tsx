@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Github, Star } from "lucide-react";
+import { Github } from "lucide-react";
 import {
   SandboxState,
   PLAYGROUNDS,
@@ -200,17 +200,18 @@ export function SandboxPage({
               href="https://github.com/aymanfouad123/skillbox"
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 px-3 py-1.5 border border-white/20 hover:border-yellow-500/50 hover:bg-yellow-500/10 transition-all text-sm text-gray-400 hover:text-yellow-500"
+              className="flex items-center gap-2 px-2 mx-2 sm:px-3 py-1.5 border border-white/20 hover:border-yellow-500/50 hover:bg-yellow-500/10 transition-all text-sm text-gray-400 hover:text-yellow-500"
             >
               <Github className="w-4 h-4" />
-              Star on GitHub
+              <span className="hidden sm:inline">Star on GitHub</span>
+              <span className="sm:hidden">Star</span>
             </a>
           </div>
           <a
             href={`https://github.com/${owner}/${repo}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-gray-400 hover:text-white transition-colors"
+            className="text-gray-400 hover:text-white transition-colors text-sm sm:text-base truncate max-w-[150px] sm:max-w-none"
           >
             {owner}/{repo} ↗
           </a>
