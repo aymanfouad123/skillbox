@@ -323,11 +323,14 @@ export async function POST(request: Request) {
     );
 
     // 1. Create Sandbox with Vercel Sandbox SDK
+    // Note: Sandbox timeout includes setup time (~60-90s), so we add buffer
+    // to ensure the frontend's 5-minute session timer stays in sync
     if (isCreateNew && targetRepo === "nextjs") {
       // For fresh Next.js, create empty sandbox and run create-next-app
+      // Extra time needed for create-next-app (~90s setup)
       sandbox = await Sandbox.create({
         resources: { vcpus: 2 },
-        timeout: ms("5m"),
+        timeout: ms("7m"),
         ports: [7681],
         runtime: "node22",
       });
@@ -335,7 +338,7 @@ export async function POST(request: Request) {
       console.log(`Sandbox created: ${sandbox.sandboxId}`);
       await createFreshNextJS(sandbox);
     } else {
-      // Clone existing repo for other playgrounds
+      // Clone existing repo for other playgrounds (~60s setup)
       sandbox = await Sandbox.create({
         source: {
           type: "git",
@@ -343,7 +346,7 @@ export async function POST(request: Request) {
           depth: 1,
         },
         resources: { vcpus: 2 },
-        timeout: ms("5m"),
+        timeout: ms("6m"),
         ports: [7681],
         runtime: "node22",
       });

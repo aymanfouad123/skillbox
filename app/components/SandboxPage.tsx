@@ -10,7 +10,7 @@ import {
 } from "../data/skills";
 
 const API_KEY_STORAGE_KEY = "skillbox_anthropic_api_key";
-const SESSION_DURATION_SECONDS = 300; // 5 minutes
+const SESSION_DURATION_SECONDS = 360; // 6 minutes
 
 interface SandboxPageProps {
   owner: string;
