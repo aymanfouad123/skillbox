@@ -88,6 +88,13 @@ export interface Playground {
 // Available playgrounds (Vercel repos)
 export const PLAYGROUNDS: Playground[] = [
   {
+    id: "new-nextjs",
+    title: "New Next.js",
+    owner: "_create",
+    repo: "nextjs",
+    description: "Clean Next.js starter with Tailwind CSS",
+  },
+  {
     id: "commerce",
     title: "Commerce",
     owner: "vercel",

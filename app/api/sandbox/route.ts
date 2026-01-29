@@ -1,6 +1,6 @@
 import { Sandbox } from "@vercel/sandbox";
-import ms from "ms";
 import { NextResponse } from "next/server";
+import ms from "ms";
 
 interface CreateSandboxRequest {
   skillOwner: string;
@@ -40,24 +40,97 @@ export async function POST(request: Request) {
       );
     }
 
+    const isCreateNew = targetOwner === "_create";
+
     console.log(
-      `Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}...`,
+      isCreateNew
+        ? `Creating sandbox with fresh ${targetRepo} project and skill ${skillName}...`
+        : `Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}...`,
     );
 
     // 1. Create Sandbox with Vercel Sandbox SDK
-    sandbox = await Sandbox.create({
-      source: {
-        type: "git",
-        url: `https://github.com/${targetOwner}/${targetRepo}.git`,
-        depth: 1,
-      },
-      resources: { vcpus: 4 },
-      timeout: ms("3m"), // 3 minutes
-      ports: [7681], // TTYD port
-      runtime: "node22",
-    });
+    if (isCreateNew && targetRepo === "nextjs") {
+      // For fresh Next.js, create empty sandbox and run create-next-app
+      sandbox = await Sandbox.create({
+        resources: { vcpus: 4 },
+        timeout: ms("5m"),
+        ports: [7681],
+        runtime: "node22",
+      });
 
-    console.log(`Sandbox created: ${sandbox.sandboxId}`);
+      console.log(`Sandbox created: ${sandbox.sandboxId}`);
+      console.log("Setting up fresh Next.js project...");
+
+      // create-next-app has a strict permission check that fails on /vercel/sandbox
+      // Workaround: create in /tmp first (always writable), then copy to /vercel/sandbox
+      console.log("Running create-next-app in /tmp...");
+      const createResult = await sandbox.runCommand({
+        cmd: "npx",
+        args: [
+          "-y",
+          "create-next-app@latest",
+          "/tmp/nextjs-project",
+          "--typescript",
+          "--tailwind",
+          "--eslint",
+          "--app",
+          "--no-git",
+          "--no-src-dir",
+          "--import-alias",
+          "@/*",
+          "--use-npm",
+          "--yes",
+        ],
+      });
+
+      const createStdout = await createResult.stdout();
+      const createStderr = await createResult.stderr();
+      console.log(`create-next-app exit code: ${createResult.exitCode}`);
+      if (createResult.exitCode !== 0) {
+        console.log(`create-next-app stdout: ${createStdout}`);
+        console.log(`create-next-app stderr: ${createStderr}`);
+      }
+
+      // Copy everything from /tmp/nextjs-project to /vercel/sandbox
+      console.log("Copying project to /vercel/sandbox...");
+      const copyResult = await sandbox.runCommand({
+        cmd: "bash",
+        args: [
+          "-c",
+          "cp -r /tmp/nextjs-project/* /vercel/sandbox/ && cp -r /tmp/nextjs-project/.[!.]* /vercel/sandbox/ 2>/dev/null || true && rm -rf /tmp/nextjs-project",
+        ],
+      });
+      if (copyResult.exitCode !== 0) {
+        const copyStderr = await copyResult.stderr();
+        console.log(`Copy warning: ${copyStderr}`);
+      }
+
+      // Verify setup
+      const verifyResult = await sandbox.runCommand({
+        cmd: "ls",
+        args: ["-la"],
+        cwd: "/vercel/sandbox",
+      });
+      const verifyStdout = await verifyResult.stdout();
+      console.log(`Directory contents: ${verifyStdout}`);
+
+      console.log("Fresh Next.js project ready");
+    } else {
+      // Clone existing repo for other playgrounds
+      sandbox = await Sandbox.create({
+        source: {
+          type: "git",
+          url: `https://github.com/${targetOwner}/${targetRepo}.git`,
+          depth: 1,
+        },
+        resources: { vcpus: 4 },
+        timeout: ms("3m"),
+        ports: [7681],
+        runtime: "node22",
+      });
+
+      console.log(`Sandbox created: ${sandbox.sandboxId}`);
+    }
 
     // 2. Install Claude CLI
     console.log("Installing Claude CLI...");
