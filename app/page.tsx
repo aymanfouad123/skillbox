@@ -81,7 +81,7 @@ export default function Home() {
                 value={searchValue}
                 onChange={(e) => setSearchValue(e.target.value)}
                 className="bg-transparent outline-none w-full max-w-lg text-lg"
-                placeholder="softaworks/agent-toolkit/mermaid-diagrams"
+                placeholder="remotion-dev/skills/remotion-best-practices"
                 autoFocus
               />
               <div
