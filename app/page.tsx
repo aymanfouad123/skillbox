@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { Github } from "lucide-react";
 import { SkillsCarousel } from "./components/SkillsCarousel";
 import { PlaygroundBoxes } from "./components/PlaygroundBoxes";
@@ -9,16 +10,27 @@ export default function Home() {
   const [searchValue, setSearchValue] = useState("");
   const [isBooting, setIsBooting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const router = useRouter();
 
   const handleBoot = (path: string) => {
+    // Parse path like "skillbox.sh/owner/repo/skill" or "owner/repo/skill"
+    const cleaned = path.replace(/^skillbox\.sh\//, "");
+
     setSearchValue(path);
     setIsBooting(true);
     inputRef.current?.focus();
 
-    // Reset booting state after animation
+    // Navigate after brief animation
     setTimeout(() => {
-      setIsBooting(false);
-    }, 1500);
+      router.push(`/${cleaned}`);
+    }, 500);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (searchValue.trim()) {
+      handleBoot(searchValue.trim());
+    }
   };
 
   return (
@@ -52,34 +64,36 @@ export default function Home() {
           <p className="text-orange-400/80 mb-4 text-sm tracking-widest uppercase">
             Tryout Agent Skills
           </p>
-          <div
-            className={`
-              group relative border p-4 transition-all duration-300
-              ${isBooting ? "border-accent bg-accent-muted" : "border-white/20 hover:border-accent/50"}
-            `}
-          >
-            <span
-              className={`mr-2 transition-colors ${isBooting ? "text-accent" : "text-white/40"}`}
-            >
-              $
-            </span>
-            <input
-              ref={inputRef}
-              value={searchValue}
-              onChange={(e) => setSearchValue(e.target.value)}
-              className="bg-transparent outline-none w-full max-w-lg text-lg"
-              placeholder="skillbox.sh/softaworks/agent-toolkit/mermaid-diagrams"
-              autoFocus
-            />
+          <form onSubmit={handleSubmit}>
             <div
               className={`
-                absolute right-4 top-1/2 -translate-y-1/2 text-[10px] tracking-wider transition-all
-                ${isBooting ? "text-accent animate-pulse block" : "text-gray-500 hidden group-hover:block"}
+                group relative border p-4 transition-all duration-300
+                ${isBooting ? "border-accent bg-accent-muted" : "border-white/20 hover:border-accent/50"}
               `}
             >
-              {isBooting ? "BOOTING..." : "PRESS ENTER TO BOOT"}
+              <span
+                className={`mr-2 transition-colors ${isBooting ? "text-accent" : "text-white/40"}`}
+              >
+                $
+              </span>
+              <input
+                ref={inputRef}
+                value={searchValue}
+                onChange={(e) => setSearchValue(e.target.value)}
+                className="bg-transparent outline-none w-full max-w-lg text-lg"
+                placeholder="softaworks/agent-toolkit/mermaid-diagrams"
+                autoFocus
+              />
+              <div
+                className={`
+                  absolute right-4 top-1/2 -translate-y-1/2 text-[10px] tracking-wider transition-all
+                  ${isBooting ? "text-accent animate-pulse block" : "text-gray-500 hidden group-hover:block"}
+                `}
+              >
+                {isBooting ? "BOOTING..." : "PRESS ENTER TO BOOT"}
+              </div>
             </div>
-          </div>
+          </form>
         </div>
 
         {/* Playground Boxes - Try skills in real Vercel production */}

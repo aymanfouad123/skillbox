@@ -46,6 +46,15 @@ export function SandboxPage({
     }
   }, []);
 
+  // Load latched playground from sessionStorage (set on landing page)
+  useEffect(() => {
+    const latchedPlayground = sessionStorage.getItem("skillbox-playground");
+    if (latchedPlayground) {
+      const found = PLAYGROUNDS.find((p) => p.id === latchedPlayground);
+      if (found) setSelectedPlayground(found);
+    }
+  }, []);
+
   // Sync API key to localStorage
   useEffect(() => {
     if (rememberApiKey && apiKey.trim()) {
