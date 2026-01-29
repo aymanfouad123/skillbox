@@ -103,32 +103,61 @@ export async function POST(request: Request) {
     }
     console.log("Skill injection completed");
 
-    // 7. Pre-configure Claude CLI to skip onboarding/setup
-    console.log("Configuring Claude CLI...");
+    // 7. Pre-configure Claude CLI to skip onboarding (don't set primaryApiKey - use env var only)
+    console.log("Setting up Claude CLI configuration...");
+    const configPayload = JSON.stringify({
+      hasCompletedOnboarding: true,
+      lastOnboardingVersion: "0.2.107",
+      lastReleaseNotesSeen: "0.2.107",
+      isQualifiedForDataSharing: false,
+      changelogLastFetched: 1000000000000,
+    });
+
     await runCommand(
       sbx,
-      // Create Claude config directory and settings to skip first-run setup
       `mkdir -p /home/user/.claude && ` +
+      `echo '${configPayload}' > /home/user/.claude.json && ` +
+      `echo '${configPayload}' > /home/user/.claude/config.json && ` +
       `echo '{"theme":"dark","hasCompletedOnboarding":true,"autoUpdaterStatus":"disabled"}' > /home/user/.claude/settings.json`
     );
 
-    // 8. Start TTYD with Claude + Initial Prompt
-    console.log("Launching Claude Agent...");
+    // 8. Launch Claude with Color support and Persistent Connection
+    console.log("Launching Claude Agent in High-Performance Mode...");
     await sbx.commands.run(
       `cd /home/user/project && ` +
-      // Environment variables for Claude CLI
-      `ANTHROPIC_API_KEY="${anthropicApiKey}" ` +
-      `TERM=xterm-256color ` +
-      `CLAUDE_CODE_SKIP_ONBOARDING=1 ` +
-      `NO_COLOR=0 ` +
-      // TTYD flags: -W for write, -t for terminal options
-      `${ttydPath} -p 7681 -W -t fontSize=14 -t disableLeaveAlert=true ` +
-      `claude --dangerously-skip-permissions "tell me about this repo and how the ${skillName} skill I just added can help improve it"`,
+      `${ttydPath} -p 7681 -W -i 0.0.0.0 -t fontSize=14 -t 'theme={"background":"#1a1a1a"}' ` +
+      `bash -c "` +
+        `export ANTHROPIC_API_KEY='${anthropicApiKey}' && ` +
+        `export FORCE_COLOR=1 && ` +
+        `export TERM=xterm-256color && ` +
+        `export COLORTERM=truecolor && ` +
+        `export CLAUDE_CODE_SKIP_ONBOARDING=true && ` +
+        `claude config add allowedTools Edit Bash && ` +
+        `claude --dangerously-skip-permissions 'Analyze this repo and specifically the ${skillName} skill I just added.' && ` +
+        `exec bash` +
+      `"`,
       { background: true }
     );
 
-    // Give TTYD a moment to start
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Wait for the port to be active so the user sees a ready UI
+    let ready = false;
+    for (let i = 0; i < 30; i++) {
+      try {
+        const check = await sbx.commands.run("curl -s http://localhost:7681");
+        if (check.exitCode === 0) {
+          ready = true;
+          break;
+        }
+      } catch {
+        // Port not ready yet, wait and retry
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
+    if (!ready) console.warn("TTYD readiness check timed out but returning URL anyway.");
+
+    // Give TTYD and Claude additional time to fully initialize
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
     const ttydUrl = `https://${sbx.getHost(7681)}`;
     console.log(`Sandbox ready: ${ttydUrl}`);
