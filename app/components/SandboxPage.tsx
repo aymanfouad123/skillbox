@@ -1,16 +1,26 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Github } from "lucide-react";
-import {
-  SandboxState,
-  PLAYGROUNDS,
-  Playground,
-  CLIProvider,
-} from "../data/skills";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "../../convex/_generated/api";
+import { PLAYGROUNDS, Playground, CLIProvider } from "../data/skills";
 
 const API_KEY_STORAGE_KEY = "skillbox_anthropic_api_key";
+const USER_ID_STORAGE_KEY = "skillbox_user_id";
 const SESSION_DURATION_SECONDS = 360; // 6 minutes
+
+// Generate or retrieve a persistent user ID for this browser session
+function getUserId(): string {
+  if (typeof window === "undefined") return "";
+
+  let userId = localStorage.getItem(USER_ID_STORAGE_KEY);
+  if (!userId) {
+    userId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    localStorage.setItem(USER_ID_STORAGE_KEY, userId);
+  }
+  return userId;
+}
 
 interface SandboxPageProps {
   owner: string;
@@ -23,9 +33,6 @@ export function SandboxPage({
   repo,
   skill: skillFromUrl,
 }: SandboxPageProps) {
-  const [sandboxState, setSandboxState] = useState<SandboxState>({
-    status: "idle",
-  });
   const [skillInput, setSkillInput] = useState("");
   const [selectedPlayground, setSelectedPlayground] =
     useState<Playground | null>(null);
@@ -33,9 +40,50 @@ export function SandboxPage({
   const [cliProvider, setCLIProvider] = useState<CLIProvider>("opencode");
   const [apiKey, setApiKey] = useState("");
   const [rememberApiKey, setRememberApiKey] = useState(false);
+  const [isBooting, setIsBooting] = useState(false);
   const [isKilling, setIsKilling] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(SESSION_DURATION_SECONDS);
+  const [localError, setLocalError] = useState<string | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  // Track which sandbox the timer is for to prevent stale timer updates
+  const timerSandboxIdRef = useRef<string | null>(null);
+
+  // Get persistent user ID
+  const userId = useMemo(() => getUserId(), []);
+
+  // Convex queries and mutations
+  const userStatus = useQuery(api.sandboxes.getUserStatus, { userId });
+  const activeSandboxCount = useQuery(api.sandboxes.getActiveSandboxCount, {});
+  const registerSandboxMutation = useMutation(api.sandboxes.registerSandbox);
+  const addToQueueMutation = useMutation(api.sandboxes.addToQueue);
+  const stopSandboxMutation = useMutation(api.sandboxes.stopSandbox);
+  const cancelQueueMutation = useMutation(api.sandboxes.cancelQueue);
+
+  // Derive state from Convex query
+  const sandboxState = useMemo(() => {
+    if (!userStatus) return { status: "loading" as const };
+
+    if (userStatus.type === "sandbox") {
+      return {
+        status: "ready" as const,
+        sandboxId: userStatus.sandboxId,
+        ttydUrl: userStatus.ttydUrl,
+        expiresAt: userStatus.expiresAt,
+      };
+    }
+
+    if (userStatus.type === "queued") {
+      return {
+        status: "queued" as const,
+        position: userStatus.position,
+      };
+    }
+
+    return {
+      status: "idle" as const,
+      hasCapacity: userStatus.hasCapacity,
+    };
+  }, [userStatus]);
 
   // Load API key from localStorage on mount
   useEffect(() => {
@@ -65,7 +113,7 @@ export function SandboxPage({
   }, [apiKey, rememberApiKey]);
 
   const handleKillSandbox = useCallback(async () => {
-    if (!sandboxState.sandboxId || isKilling) return;
+    if (isKilling) return;
 
     setIsKilling(true);
     if (timerRef.current) {
@@ -73,19 +121,22 @@ export function SandboxPage({
       timerRef.current = null;
     }
     try {
-      await fetch("/api/sandbox", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sandboxId: sandboxState.sandboxId }),
-      });
+      await stopSandboxMutation({ userId });
     } catch (error) {
       console.error("Failed to kill sandbox:", error);
     } finally {
-      setSandboxState({ status: "idle" });
       setTimeRemaining(SESSION_DURATION_SECONDS);
       setIsKilling(false);
     }
-  }, [sandboxState.sandboxId, isKilling]);
+  }, [isKilling, stopSandboxMutation, userId]);
+
+  const handleCancelQueue = useCallback(async () => {
+    try {
+      await cancelQueueMutation({ userId });
+    } catch (error) {
+      console.error("Failed to cancel queue:", error);
+    }
+  }, [cancelQueueMutation, userId]);
 
   // Session timer - countdown and auto-kill
   useEffect(() => {
@@ -94,19 +145,42 @@ export function SandboxPage({
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
+      timerSandboxIdRef.current = null;
       return;
     }
 
-    setTimeRemaining(SESSION_DURATION_SECONDS);
-    timerRef.current = setInterval(() => {
-      setTimeRemaining((prev) => {
-        if (prev <= 1) {
-          handleKillSandbox();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    const currentSandboxId =
+      "sandboxId" in sandboxState ? sandboxState.sandboxId : null;
+
+    // If this is a different sandbox than what we're timing, reset the timer
+    if (currentSandboxId !== timerSandboxIdRef.current) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      timerSandboxIdRef.current = currentSandboxId;
+
+      // Calculate remaining time from expiresAt
+      if ("expiresAt" in sandboxState && sandboxState.expiresAt) {
+        const remaining = Math.max(
+          0,
+          Math.floor((sandboxState.expiresAt - Date.now()) / 1000)
+        );
+        setTimeRemaining(remaining);
+      } else {
+        setTimeRemaining(SESSION_DURATION_SECONDS);
+      }
+
+      timerRef.current = setInterval(() => {
+        setTimeRemaining((prev) => {
+          if (prev <= 1) {
+            handleKillSandbox();
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
 
     return () => {
       if (timerRef.current) {
@@ -114,7 +188,7 @@ export function SandboxPage({
         timerRef.current = null;
       }
     };
-  }, [sandboxState.status, handleKillSandbox]);
+  }, [sandboxState, handleKillSandbox]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -135,19 +209,45 @@ export function SandboxPage({
 
   const targetOwner = selectedPlayground?.owner ?? customRepo?.owner;
   const targetRepo = selectedPlayground?.repo ?? customRepo?.repo;
+
   // OpenCode doesn't require API key, Claude does
   const canBoot =
     activeSkill.trim() &&
     targetOwner &&
     targetRepo &&
-    (cliProvider === "opencode" || apiKey.trim());
+    (cliProvider === "opencode" || apiKey.trim()) &&
+    sandboxState.status === "idle" &&
+    !isBooting;
 
   const handleBoot = async () => {
-    if (!canBoot) return;
+    if (!canBoot || !targetOwner || !targetRepo) return;
 
-    setSandboxState({ status: "creating" });
+    setLocalError(null);
+    setIsBooting(true);
+
+    const skill = `${owner}/${repo}/${activeSkill.trim()}`;
 
     try {
+      // Check if at capacity
+      if (
+        sandboxState.status === "idle" &&
+        "hasCapacity" in sandboxState &&
+        !sandboxState.hasCapacity
+      ) {
+        // Add to queue instead
+        const result = await addToQueueMutation({
+          userId,
+          skill,
+          cliProvider,
+        });
+
+        if (!result.success) {
+          throw new Error(result.error || "Failed to join queue");
+        }
+        return;
+      }
+
+      // Step 1: Create sandbox via API first
       const response = await fetch("/api/sandbox", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -158,7 +258,9 @@ export function SandboxPage({
           targetOwner,
           targetRepo,
           cliProvider,
-          ...(cliProvider === "claude" && { anthropicApiKey: apiKey.trim() }),
+          ...(cliProvider === "claude" && {
+            anthropicApiKey: apiKey.trim(),
+          }),
         }),
       });
 
@@ -168,20 +270,47 @@ export function SandboxPage({
       }
 
       const data = await response.json();
-      setSandboxState({
-        status: "ready",
+
+      // Step 2: Register in Convex with complete data
+      const registerResult = await registerSandboxMutation({
+        userId,
         sandboxId: data.sandboxId,
         ttydUrl: data.ttydUrl,
+        skill,
+        cliProvider,
       });
+
+      if (!registerResult.success) {
+        // Clean up the Vercel sandbox since we couldn't register it
+        try {
+          await fetch("/api/sandbox", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sandboxId: data.sandboxId }),
+          });
+        } catch {
+          // Best effort cleanup, ignore errors
+        }
+
+        if (registerResult.error === "at_capacity") {
+          // Race condition - add to queue instead
+          await addToQueueMutation({ userId, skill, cliProvider });
+        } else {
+          throw new Error(registerResult.error || "Failed to register sandbox");
+        }
+      }
     } catch (error) {
-      setSandboxState({
-        status: "error",
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
+      setLocalError(
+        error instanceof Error ? error.message : "Failed to create sandbox"
+      );
+    } finally {
+      setIsBooting(false);
     }
   };
 
   const getButtonText = () => {
+    if (isBooting) return "Creating...";
+    if (sandboxState.status !== "idle") return "Sandbox Active";
     if (!activeSkill.trim()) return "Enter a skill name";
     if (!targetOwner || !targetRepo) return "Select a repository";
     if (cliProvider === "claude" && !apiKey.trim()) return "Enter your API key";
@@ -189,6 +318,14 @@ export function SandboxPage({
       selectedPlayground?.title ?? `${targetOwner}/${targetRepo}`;
     const cliName = cliProvider === "opencode" ? "OpenCode" : "Claude";
     return `Boot ${repoName} with ${cliName}`;
+  };
+
+  // Get estimated wait time for queue
+  const getEstimatedWait = (position: number) => {
+    const minutes = Math.ceil(position * 1.5);
+    if (minutes < 1) return "less than a minute";
+    if (minutes === 1) return "about 1 minute";
+    return `about ${minutes} minutes`;
   };
 
   return (
@@ -252,8 +389,30 @@ export function SandboxPage({
           </div>
         </div>
 
+        {/* Active sandbox count indicator */}
+        {activeSandboxCount !== undefined && (
+          <div className="mb-4 text-xs text-gray-500 text-right">
+            {activeSandboxCount}/100 sandboxes active
+          </div>
+        )}
+
+        {/* Error message */}
+        {localError && (
+          <div className="mb-6 border border-red-500/50 p-4">
+            <p className="text-red-500 text-sm">{localError}</p>
+            <button
+              onClick={() => setLocalError(null)}
+              className="mt-2 text-xs text-gray-400 hover:text-white"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* Sandbox setup area - shown when idle */}
-        {sandboxState.status === "idle" && (
+        {(sandboxState.status === "idle" ||
+          sandboxState.status === "loading") &&
+          !isBooting && (
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -492,7 +651,33 @@ export function SandboxPage({
           </form>
         )}
 
-        {sandboxState.status === "creating" && (
+        {/* Queue status - shown when user is waiting in queue */}
+        {sandboxState.status === "queued" && (
+          <div className="border border-yellow-500/50 p-8 text-center">
+            <div className="text-yellow-500 text-xl mb-4">
+              ⏳ You&apos;re in the Queue
+            </div>
+            <div className="text-4xl font-bold text-yellow-400 mb-2">
+              #{sandboxState.position}
+            </div>
+            <p className="text-gray-400 text-sm mb-4">
+              Estimated wait: {getEstimatedWait(sandboxState.position)}
+            </p>
+            <p className="text-gray-600 text-xs mb-4">
+              We&apos;re at capacity (100 sandboxes). You&apos;ll be
+              automatically moved forward as slots open up.
+            </p>
+            <button
+              onClick={handleCancelQueue}
+              className="px-4 py-2 border border-white/20 hover:border-red-500/50 hover:text-red-500 transition-colors text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {/* Creating state - shown during API call */}
+        {isBooting && (
           <div className="border border-orange-500/50 p-8 text-center">
             <div className="text-orange-500 text-xl mb-4 animate-pulse">
               ◐ Creating Sandbox...
@@ -507,19 +692,7 @@ export function SandboxPage({
           </div>
         )}
 
-        {sandboxState.status === "error" && (
-          <div className="border border-red-500/50 p-6">
-            <p className="text-red-500 mb-4">Error: {sandboxState.error}</p>
-            <button
-              onClick={() => handleBoot()}
-              className="px-4 py-2 border border-white/20 hover:border-white transition-colors"
-            >
-              Retry
-            </button>
-          </div>
-        )}
-
-        {sandboxState.status === "ready" && sandboxState.ttydUrl && (
+        {sandboxState.status === "ready" && "ttydUrl" in sandboxState && (
           <div className="pb-8">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-gray-500">
