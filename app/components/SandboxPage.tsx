@@ -207,8 +207,10 @@ export function SandboxPage({
     return { owner: match[1], repo: match[2].replace(/\.git$/, "") };
   })();
 
-  const targetOwner = selectedPlayground?.owner ?? customRepo?.owner;
-  const targetRepo = selectedPlayground?.repo ?? customRepo?.repo;
+  // If we have a valid GitHub repo, use it exclusively (disable playground selection)
+  const hasGithubRepo = customRepo !== null;
+  const targetOwner = hasGithubRepo ? customRepo.owner : selectedPlayground?.owner;
+  const targetRepo = hasGithubRepo ? customRepo.repo : selectedPlayground?.repo;
 
   // OpenCode doesn't require API key, Claude does
   const canBoot =
@@ -453,14 +455,17 @@ export function SandboxPage({
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {PLAYGROUNDS.map((pg) => {
                   const isSelected = selectedPlayground?.id === pg.id;
+                  const isDisabled = hasGithubRepo;
                   return (
                     <div
                       key={pg.id}
-                      onClick={() => setSelectedPlayground(pg)}
-                      className={`border p-4 cursor-pointer transition-colors ${
-                        isSelected
-                          ? "border-orange-500 bg-orange-500/10"
-                          : "border-white/10 hover:border-white/30"
+                      onClick={() => !isDisabled && setSelectedPlayground(pg)}
+                      className={`border p-4 transition-colors ${
+                        isDisabled
+                          ? "cursor-not-allowed opacity-40 border-white/10"
+                          : isSelected
+                            ? "border-orange-500 bg-orange-500/10 cursor-pointer"
+                            : "border-white/10 hover:border-white/30 cursor-pointer"
                       }`}
                     >
                       <div className="flex items-start justify-between">
@@ -499,16 +504,25 @@ export function SandboxPage({
                   type="text"
                   value={customRepoUrl}
                   onChange={(e) => {
-                    setCustomRepoUrl(e.target.value);
-                    if (e.target.value.trim()) setSelectedPlayground(null);
+                    const newValue = e.target.value;
+                    setCustomRepoUrl(newValue);
+                    // Clear playground selection when entering a custom URL
+                    if (newValue.trim()) {
+                      setSelectedPlayground(null);
+                    }
                   }}
                   placeholder="https://github.com/owner/repo"
                   className={`w-full bg-black border p-4 text-white placeholder:text-gray-600 focus:outline-none font-mono ${
-                    customRepoUrl.trim() && !selectedPlayground
+                    hasGithubRepo
                       ? "border-orange-500"
                       : "border-white/20 focus:border-orange-500"
                   }`}
                 />
+                {hasGithubRepo && (
+                  <p className="mt-2 text-xs text-orange-500/70">
+                    Using custom repository: {customRepo.owner}/{customRepo.repo}
+                  </p>
+                )}
               </div>
             </div>
 
