@@ -2,28 +2,21 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
-  // Tracks active sandboxes
+  // Active and archived sandboxes
+  // Records are only created when sandbox is fully ready (no placeholder data)
   sandboxes: defineTable({
-    sandboxId: v.string(), // Vercel sandbox ID
-    userId: v.string(), // Browser session ID
-    ttydUrl: v.optional(v.string()), // Terminal URL (set when ready)
+    userId: v.string(),
+    sandboxId: v.string(), // Real Vercel sandbox ID (required)
+    ttydUrl: v.string(), // Real terminal URL (required)
+    skill: v.string(), // "owner/repo/skillName"
+    cliProvider: v.union(v.literal("opencode"), v.literal("claude")),
     status: v.union(
-      v.literal("creating"),
-      v.literal("ready"),
-      v.literal("stopping"),
-      v.literal("stopped"),
+      v.literal("active"), // Currently running
+      v.literal("archived") // Stopped, kept for analytics
     ),
-    // Request data for creating the sandbox
-    requestData: v.object({
-      skillOwner: v.string(),
-      skillRepo: v.string(),
-      skillName: v.string(),
-      targetOwner: v.string(),
-      targetRepo: v.string(),
-      cliProvider: v.union(v.literal("opencode"), v.literal("claude")),
-    }),
-    createdAt: v.number(), // Timestamp
-    expiresAt: v.number(), // Timestamp when sandbox should be cleaned up
+    createdAt: v.number(),
+    expiresAt: v.number(),
+    archivedAt: v.optional(v.number()),
   })
     .index("by_status", ["status"])
     .index("by_userId", ["userId"])
@@ -31,30 +24,24 @@ export default defineSchema({
     .index("by_expiresAt", ["expiresAt"]),
 
   // Queue for waiting users when at capacity
+  // Entries are DELETED when processed (not archived)
   queue: defineTable({
-    userId: v.string(), // Browser session ID
-    position: v.number(), // Queue position
-    requestData: v.object({
-      skillOwner: v.string(),
-      skillRepo: v.string(),
-      skillName: v.string(),
-      targetOwner: v.string(),
-      targetRepo: v.string(),
-      cliProvider: v.union(v.literal("opencode"), v.literal("claude")),
-      // API key is NOT stored in Convex for security - passed directly when processing
-    }),
-    status: v.union(
-      v.literal("waiting"),
-      v.literal("processing"),
-      v.literal("ready"),
-      v.literal("failed"),
-      v.literal("cancelled"),
-    ),
-    errorMessage: v.optional(v.string()),
+    userId: v.string(),
+    position: v.number(),
+    skill: v.string(), // "owner/repo/skillName"
+    cliProvider: v.union(v.literal("opencode"), v.literal("claude")),
     createdAt: v.number(),
+    retryCount: v.optional(v.number()), // Track failed attempts for retry logic
   })
-    .index("by_status", ["status"])
-    .index("by_status_position", ["status", "position"])
-    .index("by_userId", ["userId"])
-    .index("by_position", ["position"]),
+    .index("by_position", ["position"])
+    .index("by_userId", ["userId"]),
+
+  // Simple analytics counter (singleton-ish, one record)
+  // The hero metric: total sandboxes created
+  analytics: defineTable({
+    totalSandboxes: v.number(), // Main metric for landing page
+    opencodeCount: v.number(), // OpenCode CLI usage
+    claudeCount: v.number(), // Claude CLI usage
+    updatedAt: v.number(),
+  }),
 });
