@@ -4,13 +4,15 @@ import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Github } from "lucide-react";
 import { SkillsCarousel } from "./components/SkillsCarousel";
-import { PlaygroundBoxes } from "./components/PlaygroundBoxes";
+import { useQuery } from "convex/react";
+import { api } from "../convex/_generated/api";
 
 export default function Home() {
   const [searchValue, setSearchValue] = useState("");
   const [isBooting, setIsBooting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
+  const totalSandboxes = useQuery(api.analytics.getTotalSandboxes);
 
   const handleBoot = (path: string) => {
     // Parse path like "skillbox.sh/owner/repo/skill" or "owner/repo/skill"
@@ -68,11 +70,17 @@ export default function Home() {
             <div
               className={`
                 group relative border p-4 transition-all duration-300
-                ${isBooting ? "border-accent bg-accent-muted" : "border-white/20 hover:border-accent/50"}
+                ${
+                  isBooting
+                    ? "border-accent bg-accent-muted"
+                    : "border-white/20 hover:border-accent/50"
+                }
               `}
             >
               <span
-                className={`mr-2 transition-colors ${isBooting ? "text-accent" : "text-white/40"}`}
+                className={`mr-2 transition-colors ${
+                  isBooting ? "text-accent" : "text-white/40"
+                }`}
               >
                 $
               </span>
@@ -87,7 +95,11 @@ export default function Home() {
               <div
                 className={`
                   absolute right-4 top-1/2 -translate-y-1/2 text-[10px] tracking-wider transition-all
-                  ${isBooting ? "text-accent animate-pulse block" : "text-gray-500 hidden group-hover:block"}
+                  ${
+                    isBooting
+                      ? "text-accent animate-pulse block"
+                      : "text-gray-500 hidden group-hover:block"
+                  }
                 `}
               >
                 {isBooting ? "BOOTING..." : "PRESS ENTER TO BOOT"}
@@ -96,8 +108,21 @@ export default function Home() {
           </form>
         </div>
 
-        {/* Playground Boxes - Try skills in real Vercel production */}
-        <PlaygroundBoxes />
+        {/* Sandbox Stats */}
+        <div className="mb-12 flex items-center justify-center gap-3">
+          <div className="h-px flex-1 bg-white/10" />
+          <div className="flex items-center gap-3 px-4">
+            <span className="text-2xl font-bold text-orange-500 tabular-nums">
+              {totalSandboxes !== undefined
+                ? totalSandboxes.toLocaleString()
+                : "—"}
+            </span>
+            <span className="text-xs tracking-widest text-white/40 uppercase">
+              sandboxes created
+            </span>
+          </div>
+          <div className="h-px flex-1 bg-white/10" />
+        </div>
 
         {/* Top Skills Carousel */}
         <SkillsCarousel onBoot={handleBoot} />
