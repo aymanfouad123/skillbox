@@ -111,7 +111,7 @@ export const PLAYGROUNDS: Playground[] = [
   {
     id: "new-nextjs",
     title: "New Next.js",
-    owner: "_create",
+    owner: "create",
     repo: "nextjs",
     description: "Clean Next.js starter with Tailwind CSS",
   },
