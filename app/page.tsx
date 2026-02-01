@@ -62,9 +62,9 @@ export default function Home() {
         </div>
 
         {/* The Action Hook */}
-        <div className="mb-12">
+        <div className="mb-8">
           <p className="text-orange-400/80 mb-4 text-sm tracking-widest uppercase">
-            Tryout Agent Skills
+            Tryout An Agent Skill
           </p>
           <form onSubmit={handleSubmit}>
             <div
@@ -108,22 +108,27 @@ export default function Home() {
           </form>
         </div>
 
-        {/* Sandbox Stats */}
-        <div className="mb-12 flex items-center justify-center gap-3">
-          <div className="h-px flex-1 bg-white/10" />
-          <div className="flex items-center gap-3 px-4">
-            <span className="text-2xl font-bold text-orange-500 tabular-nums">
+        <div className="flex items-center justify-center gap-4 py-6 text-xs font-light tracking-[0.2em] text-gray-500 uppercase">
+          {/* The Pulse */}
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-500 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-600"></span>
+          </span>
+
+          {/* The Stats */}
+          <div className="flex items-center gap-2">
+            <span className="text-white font-medium text-xl tabular-nums">
               {totalSandboxes !== undefined
                 ? totalSandboxes.toLocaleString()
                 : "—"}
             </span>
-            <span className="text-xs tracking-widest text-white/40 uppercase">
-              sandboxes created
-            </span>
+            <span>Global Sandboxes Orchestrated</span>
           </div>
-          <div className="h-px flex-1 bg-white/10" />
-        </div>
 
+          {/* Optional: The Divider and Live Status */}
+          <span className="text-white/10">|</span>
+          <span className="text-orange-500/80 animate-pulse">System Live</span>
+        </div>
         {/* Top Skills Carousel */}
         <SkillsCarousel onBoot={handleBoot} />
       </div>
