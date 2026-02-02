@@ -44,9 +44,12 @@ export function SandboxPage({
   const [isKilling, setIsKilling] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(SESSION_DURATION_SECONDS);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [isFulfillingQueue, setIsFulfillingQueue] = useState(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   // Track which sandbox the timer is for to prevent stale timer updates
   const timerSandboxIdRef = useRef<string | null>(null);
+  // Prevent duplicate queue fulfillment attempts
+  const fulfillingQueueRef = useRef(false);
 
   // Get persistent user ID
   const userId = useMemo(() => getUserId(), []);
@@ -58,6 +61,9 @@ export function SandboxPage({
   const addToQueueMutation = useMutation(api.sandboxes.addToQueue);
   const stopSandboxMutation = useMutation(api.sandboxes.stopSandbox);
   const cancelQueueMutation = useMutation(api.sandboxes.cancelQueue);
+  const claimQueueSlotMutation = useMutation(api.sandboxes.claimQueueSlot);
+  const sendHeartbeatMutation = useMutation(api.sandboxes.sendHeartbeat);
+  const removeFromQueueMutation = useMutation(api.sandboxes.removeFromQueue);
 
   // Derive state from Convex query
   const sandboxState = useMemo(() => {
@@ -76,6 +82,9 @@ export function SandboxPage({
       return {
         status: "queued" as const,
         position: userStatus.position,
+        readyToFulfill: userStatus.readyToFulfill,
+        skill: userStatus.skill,
+        cliProvider: userStatus.cliProvider,
       };
     }
 
@@ -111,6 +120,165 @@ export function SandboxPage({
       localStorage.removeItem(API_KEY_STORAGE_KEY);
     }
   }, [apiKey, rememberApiKey]);
+
+  // Heartbeat effect for Claude users in queue
+  // Sends heartbeat every 10 seconds to prove browser is still connected
+  useEffect(() => {
+    if (
+      sandboxState.status !== "queued" ||
+      !("cliProvider" in sandboxState) ||
+      sandboxState.cliProvider !== "claude" ||
+      isFulfillingQueue
+    ) {
+      return;
+    }
+
+    // Send immediate heartbeat
+    sendHeartbeatMutation({ userId }).catch(console.error);
+
+    // Send heartbeat every 10 seconds
+    const interval = setInterval(() => {
+      sendHeartbeatMutation({ userId }).catch(console.error);
+    }, 10 * 1000);
+
+    return () => clearInterval(interval);
+  }, [sandboxState, userId, sendHeartbeatMutation, isFulfillingQueue]);
+
+  // Immediate exit: remove from queue on page unload (beforeunload)
+  useEffect(() => {
+    if (
+      sandboxState.status !== "queued" ||
+      !("cliProvider" in sandboxState) ||
+      sandboxState.cliProvider !== "claude"
+    ) {
+      return;
+    }
+
+    const handleBeforeUnload = () => {
+      // Use sendBeacon for reliable delivery during page unload
+      // We need to call a Convex HTTP endpoint for this
+      // For now, we'll try the mutation (may not complete)
+      removeFromQueueMutation({ userId }).catch(() => {
+        // Ignore errors - heartbeat expiry will clean up
+      });
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [sandboxState, userId, removeFromQueueMutation]);
+
+  // Handle client-side queue fulfillment for Claude BYOK
+  // When a Claude user's queue slot is ready, create sandbox with API key from localStorage
+  useEffect(() => {
+    if (
+      sandboxState.status !== "queued" ||
+      !("readyToFulfill" in sandboxState) ||
+      !sandboxState.readyToFulfill ||
+      sandboxState.cliProvider !== "claude" ||
+      fulfillingQueueRef.current
+    ) {
+      return;
+    }
+
+    const fulfillQueue = async () => {
+      // Prevent duplicate attempts
+      if (fulfillingQueueRef.current) return;
+      fulfillingQueueRef.current = true;
+      setIsFulfillingQueue(true);
+      setLocalError(null);
+
+      try {
+        // Get API key from localStorage
+        const storedApiKey = localStorage.getItem(API_KEY_STORAGE_KEY);
+        if (!storedApiKey) {
+          setLocalError(
+            "API key not found. Please re-enter your Anthropic API key."
+          );
+          // Cancel the queue entry since we can't fulfill it
+          await cancelQueueMutation({ userId });
+          return;
+        }
+
+        // Claim the queue slot (atomically removes from queue)
+        const claimResult = await claimQueueSlotMutation({ userId });
+        if (!claimResult.success) {
+          // Slot was taken or no longer available, query will update
+          return;
+        }
+
+        // Parse skill to get components
+        const skillParts = claimResult.skill?.split("/") || [];
+        if (skillParts.length < 3) {
+          setLocalError("Invalid skill format in queue");
+          return;
+        }
+
+        const [skillOwner, skillRepo, ...skillNameParts] = skillParts;
+        const skillName = skillNameParts.join("/");
+
+        // Create sandbox with API key
+        const response = await fetch("/api/sandbox", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            skillOwner,
+            skillRepo,
+            skillName,
+            // Use fresh Next.js for queued sessions
+            targetOwner: "_create",
+            targetRepo: "nextjs",
+            cliProvider: "claude",
+            anthropicApiKey: storedApiKey,
+          }),
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || "Failed to create sandbox");
+        }
+
+        const data = await response.json();
+
+        // Register the sandbox
+        const registerResult = await registerSandboxMutation({
+          userId,
+          sandboxId: data.sandboxId,
+          ttydUrl: data.ttydUrl,
+          skill: claimResult.skill!,
+          cliProvider: "claude",
+        });
+
+        if (!registerResult.success) {
+          // Clean up Vercel sandbox
+          try {
+            await fetch("/api/sandbox", {
+              method: "DELETE",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ sandboxId: data.sandboxId }),
+            });
+          } catch {
+            // Best effort cleanup
+          }
+          throw new Error(registerResult.error || "Failed to register sandbox");
+        }
+      } catch (error) {
+        setLocalError(
+          error instanceof Error ? error.message : "Failed to create sandbox"
+        );
+      } finally {
+        fulfillingQueueRef.current = false;
+        setIsFulfillingQueue(false);
+      }
+    };
+
+    fulfillQueue();
+  }, [
+    sandboxState,
+    userId,
+    claimQueueSlotMutation,
+    cancelQueueMutation,
+    registerSandboxMutation,
+  ]);
 
   const handleKillSandbox = useCallback(async () => {
     if (isKilling) return;
@@ -394,7 +562,7 @@ export function SandboxPage({
         {/* Active sandbox count indicator */}
         {activeSandboxCount !== undefined && (
           <div className="mb-4 text-xs text-gray-500 text-right">
-            {activeSandboxCount}/100 sandboxes active
+            {activeSandboxCount}/150 sandboxes active
           </div>
         )}
 
@@ -666,7 +834,7 @@ export function SandboxPage({
         )}
 
         {/* Queue status - shown when user is waiting in queue */}
-        {sandboxState.status === "queued" && (
+        {sandboxState.status === "queued" && !isFulfillingQueue && (
           <div className="border border-yellow-500/50 p-8 text-center">
             <div className="text-yellow-500 text-xl mb-4">
               ⏳ You&apos;re in the Queue
@@ -678,7 +846,7 @@ export function SandboxPage({
               Estimated wait: {getEstimatedWait(sandboxState.position)}
             </p>
             <p className="text-gray-600 text-xs mb-4">
-              We&apos;re at capacity (100 sandboxes). You&apos;ll be
+              We&apos;re at capacity (150 sandboxes). You&apos;ll be
               automatically moved forward as slots open up.
             </p>
             <button
@@ -687,6 +855,22 @@ export function SandboxPage({
             >
               Cancel
             </button>
+          </div>
+        )}
+
+        {/* Queue fulfillment - shown when creating sandbox from queue (Claude BYOK) */}
+        {isFulfillingQueue && (
+          <div className="border border-orange-500/50 p-8 text-center">
+            <div className="text-orange-500 text-xl mb-4 animate-pulse">
+              ◐ Your Turn - Creating Sandbox...
+            </div>
+            <p className="text-gray-500 text-sm">
+              Cloning repository, installing dependencies, and starting
+              terminal with your API key...
+            </p>
+            <div className="mt-4 text-xs text-gray-600">
+              This may take 30-60 seconds
+            </div>
           </div>
         )}
 

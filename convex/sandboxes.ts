@@ -8,7 +8,13 @@ import {
 import { internal } from "./_generated/api";
 
 // Maximum number of concurrent sandboxes
-const MAX_SANDBOXES = 100;
+const MAX_SANDBOXES = 150;
+
+// Heartbeat timeout for Claude users in queue (30 seconds)
+const HEARTBEAT_TIMEOUT_MS = 30 * 1000;
+
+// Claude fulfillment timeout - if ready but no boot within 15s, kick to back
+const CLAUDE_FULFILL_TIMEOUT_MS = 15 * 1000;
 
 // Sandbox session duration in milliseconds (6 minutes)
 // Note: The Vercel backend uses 7 minutes to account for ~60-90s setup time.
@@ -69,10 +75,26 @@ export const getUserStatus = query({
         .filter((q) => q.lt(q.field("position"), queueEntry.position))
         .collect();
 
+      const position = ahead.length + 1;
+
+      // For Claude users at position 1, check if capacity is available
+      // Frontend will handle sandbox creation with API key from localStorage
+      let readyToFulfill = false;
+      if (queueEntry.cliProvider === "claude" && position === 1) {
+        const activeCount = await ctx.db
+          .query("sandboxes")
+          .withIndex("by_status", (q) => q.eq("status", "active"))
+          .collect();
+        readyToFulfill = activeCount.length < MAX_SANDBOXES;
+      }
+
       return {
         type: "queued" as const,
-        position: ahead.length + 1,
+        position,
         queueId: queueEntry._id,
+        cliProvider: queueEntry.cliProvider,
+        skill: queueEntry.skill,
+        readyToFulfill,
       };
     }
 
@@ -197,13 +219,24 @@ export const addToQueue = mutation({
       .first();
 
     const position = lastInQueue ? lastInQueue.position + 1 : 1;
+    const now = Date.now();
+
+    // For Claude users, set initial heartbeat and expiry
+    const heartbeatFields =
+      args.cliProvider === "claude"
+        ? {
+            lastHeartbeat: now,
+            queueExpiresAt: now + HEARTBEAT_TIMEOUT_MS,
+          }
+        : {};
 
     await ctx.db.insert("queue", {
       userId: args.userId,
       position,
       skill: args.skill,
       cliProvider: args.cliProvider,
-      createdAt: Date.now(),
+      createdAt: now,
+      ...heartbeatFields,
     });
 
     return { success: true, position };
@@ -227,6 +260,106 @@ export const cancelQueue = mutation({
     }
 
     return { success: false, error: "not_found" };
+  },
+});
+
+/**
+ * Send heartbeat for Claude users in queue
+ * Called every 10 seconds by frontend to prove browser is still connected
+ */
+export const sendHeartbeat = mutation({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    const entry = await ctx.db
+      .query("queue")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .first();
+
+    if (!entry) {
+      return { success: false, error: "not_in_queue" };
+    }
+
+    // Only Claude users need heartbeats
+    if (entry.cliProvider !== "claude") {
+      return { success: true };
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(entry._id, {
+      lastHeartbeat: now,
+      queueExpiresAt: now + HEARTBEAT_TIMEOUT_MS,
+    });
+
+    return { success: true };
+  },
+});
+
+/**
+ * Remove from queue immediately (called on beforeunload)
+ * Uses sendBeacon so must be fire-and-forget friendly
+ */
+export const removeFromQueue = mutation({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    const entry = await ctx.db
+      .query("queue")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .first();
+
+    if (entry) {
+      await ctx.db.delete(entry._id);
+    }
+    // Always return success - fire-and-forget
+    return { success: true };
+  },
+});
+
+/**
+ * Claim queue slot for client-side fulfillment (Claude BYOK)
+ * Atomically removes user from queue so frontend can create sandbox with API key
+ */
+export const claimQueueSlot = mutation({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    // Find the queue entry
+    const entry = await ctx.db
+      .query("queue")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .first();
+
+    if (!entry) {
+      return { success: false, error: "not_in_queue" };
+    }
+
+    // Verify they're at position 1
+    const ahead = await ctx.db
+      .query("queue")
+      .withIndex("by_position")
+      .filter((q) => q.lt(q.field("position"), entry.position))
+      .collect();
+
+    if (ahead.length > 0) {
+      return { success: false, error: "not_first_in_queue" };
+    }
+
+    // Verify capacity is available
+    const activeCount = await ctx.db
+      .query("sandboxes")
+      .withIndex("by_status", (q) => q.eq("status", "active"))
+      .collect();
+
+    if (activeCount.length >= MAX_SANDBOXES) {
+      return { success: false, error: "no_capacity" };
+    }
+
+    // Remove from queue - frontend will now create the sandbox
+    await ctx.db.delete(entry._id);
+
+    return {
+      success: true,
+      skill: entry.skill,
+      cliProvider: entry.cliProvider,
+    };
   },
 });
 

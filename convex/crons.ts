@@ -19,4 +19,20 @@ crons.interval(
   internal.queue.processQueue
 );
 
+// Clean up stale Claude queue entries every 15 seconds
+// Removes entries where heartbeat has expired (browser closed)
+crons.interval(
+  "cleanup stale claude queue",
+  { seconds: 15 },
+  internal.queue.cleanupStaleClaudeEntries
+);
+
+// Handle slow Claude users every 10 seconds
+// Kicks users who are ready but haven't booted within 15 seconds to back of line
+crons.interval(
+  "handle slow claude users",
+  { seconds: 10 },
+  internal.queue.handleSlowClaudeUsers
+);
+
 export default crons;
