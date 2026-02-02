@@ -1,16 +1,26 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Github } from "lucide-react";
-import {
-  SandboxState,
-  PLAYGROUNDS,
-  Playground,
-  CLIProvider,
-} from "../data/skills";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "../../convex/_generated/api";
+import { PLAYGROUNDS, Playground, CLIProvider } from "../data/skills";
 
 const API_KEY_STORAGE_KEY = "skillbox_anthropic_api_key";
+const USER_ID_STORAGE_KEY = "skillbox_user_id";
 const SESSION_DURATION_SECONDS = 360; // 6 minutes
+
+// Generate or retrieve a persistent user ID for this browser session
+function getUserId(): string {
+  if (typeof window === "undefined") return "";
+
+  let userId = localStorage.getItem(USER_ID_STORAGE_KEY);
+  if (!userId) {
+    userId = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    localStorage.setItem(USER_ID_STORAGE_KEY, userId);
+  }
+  return userId;
+}
 
 interface SandboxPageProps {
   owner: string;
@@ -23,9 +33,6 @@ export function SandboxPage({
   repo,
   skill: skillFromUrl,
 }: SandboxPageProps) {
-  const [sandboxState, setSandboxState] = useState<SandboxState>({
-    status: "idle",
-  });
   const [skillInput, setSkillInput] = useState("");
   const [selectedPlayground, setSelectedPlayground] =
     useState<Playground | null>(null);
@@ -33,9 +40,64 @@ export function SandboxPage({
   const [cliProvider, setCLIProvider] = useState<CLIProvider>("opencode");
   const [apiKey, setApiKey] = useState("");
   const [rememberApiKey, setRememberApiKey] = useState(false);
+  const [isBooting, setIsBooting] = useState(false);
   const [isKilling, setIsKilling] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(SESSION_DURATION_SECONDS);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [isFulfillingQueue, setIsFulfillingQueue] = useState(false);
+  // When Claude fulfillment fails after claim, we can offer re-join with same skill
+  const [failedClaimInfo, setFailedClaimInfo] = useState<{
+    skill: string;
+    cliProvider: "claude";
+  } | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  // Track which sandbox the timer is for to prevent stale timer updates
+  const timerSandboxIdRef = useRef<string | null>(null);
+  // Prevent duplicate queue fulfillment attempts
+  const fulfillingQueueRef = useRef(false);
+
+  // Get persistent user ID
+  const userId = useMemo(() => getUserId(), []);
+
+  // Convex queries and mutations
+  const userStatus = useQuery(api.sandboxes.getUserStatus, { userId });
+  const activeSandboxCount = useQuery(api.sandboxes.getActiveSandboxCount, {});
+  const registerSandboxMutation = useMutation(api.sandboxes.registerSandbox);
+  const addToQueueMutation = useMutation(api.sandboxes.addToQueue);
+  const stopSandboxMutation = useMutation(api.sandboxes.stopSandbox);
+  const cancelQueueMutation = useMutation(api.sandboxes.cancelQueue);
+  const claimQueueSlotMutation = useMutation(api.sandboxes.claimQueueSlot);
+  const sendHeartbeatMutation = useMutation(api.sandboxes.sendHeartbeat);
+  const removeFromQueueMutation = useMutation(api.sandboxes.removeFromQueue);
+
+  // Derive state from Convex query
+  const sandboxState = useMemo(() => {
+    if (!userStatus) return { status: "loading" as const };
+
+    if (userStatus.type === "sandbox") {
+      return {
+        status: "ready" as const,
+        sandboxId: userStatus.sandboxId,
+        ttydUrl: userStatus.ttydUrl,
+        expiresAt: userStatus.expiresAt,
+      };
+    }
+
+    if (userStatus.type === "queued") {
+      return {
+        status: "queued" as const,
+        position: userStatus.position,
+        readyToFulfill: userStatus.readyToFulfill,
+        skill: userStatus.skill,
+        cliProvider: userStatus.cliProvider,
+      };
+    }
+
+    return {
+      status: "idle" as const,
+      hasCapacity: userStatus.hasCapacity,
+    };
+  }, [userStatus]);
 
   // Load API key from localStorage on mount
   useEffect(() => {
@@ -64,8 +126,178 @@ export function SandboxPage({
     }
   }, [apiKey, rememberApiKey]);
 
+  // Heartbeat effect for Claude users in queue
+  // Sends heartbeat every 10 seconds to prove browser is still connected
+  useEffect(() => {
+    if (
+      sandboxState.status !== "queued" ||
+      !("cliProvider" in sandboxState) ||
+      sandboxState.cliProvider !== "claude" ||
+      isFulfillingQueue
+    ) {
+      return;
+    }
+
+    // Send immediate heartbeat
+    sendHeartbeatMutation({ userId }).catch(console.error);
+
+    // Send heartbeat every 10 seconds
+    const interval = setInterval(() => {
+      sendHeartbeatMutation({ userId }).catch(console.error);
+    }, 10 * 1000);
+
+    return () => clearInterval(interval);
+  }, [sandboxState, userId, sendHeartbeatMutation, isFulfillingQueue]);
+
+  // Immediate exit: remove from queue on page unload (beforeunload)
+  useEffect(() => {
+    if (
+      sandboxState.status !== "queued" ||
+      !("cliProvider" in sandboxState) ||
+      sandboxState.cliProvider !== "claude"
+    ) {
+      return;
+    }
+
+    const handleBeforeUnload = () => {
+      // Use sendBeacon for reliable delivery during page unload
+      // We need to call a Convex HTTP endpoint for this
+      // For now, we'll try the mutation (may not complete)
+      removeFromQueueMutation({ userId }).catch(() => {
+        // Ignore errors - heartbeat expiry will clean up
+      });
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [sandboxState, userId, removeFromQueueMutation]);
+
+  // Handle client-side queue fulfillment for Claude BYOK
+  // When a Claude user's queue slot is ready, create sandbox with API key from localStorage
+  useEffect(() => {
+    if (
+      sandboxState.status !== "queued" ||
+      !("readyToFulfill" in sandboxState) ||
+      !sandboxState.readyToFulfill ||
+      sandboxState.cliProvider !== "claude" ||
+      fulfillingQueueRef.current
+    ) {
+      return;
+    }
+
+    const fulfillQueue = async () => {
+      // Prevent duplicate attempts
+      if (fulfillingQueueRef.current) return;
+      fulfillingQueueRef.current = true;
+      setIsFulfillingQueue(true);
+      setLocalError(null);
+      setFailedClaimInfo(null);
+
+      try {
+        // Get API key from localStorage
+        const storedApiKey = localStorage.getItem(API_KEY_STORAGE_KEY);
+        if (!storedApiKey) {
+          setLocalError(
+            "API key not found. Please re-enter your Anthropic API key."
+          );
+          // Cancel the queue entry since we can't fulfill it
+          await cancelQueueMutation({ userId });
+          return;
+        }
+
+        // Claim the queue slot (atomically removes from queue)
+        const claimResult = await claimQueueSlotMutation({ userId });
+        if (!claimResult.success) {
+          // Slot was taken or no longer available, query will update
+          return;
+        }
+
+        // Store so we can offer re-join if sandbox creation fails after claim (always Claude here)
+        if (claimResult.skill && claimResult.cliProvider === "claude") {
+          setFailedClaimInfo({
+            skill: claimResult.skill,
+            cliProvider: "claude",
+          });
+        }
+
+        // Parse skill to get components
+        const skillParts = claimResult.skill?.split("/") || [];
+        if (skillParts.length < 3) {
+          setLocalError("Invalid skill format in queue");
+          return;
+        }
+
+        const [skillOwner, skillRepo, ...skillNameParts] = skillParts;
+        const skillName = skillNameParts.join("/");
+
+        // Create sandbox with API key
+        const response = await fetch("/api/sandbox", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            skillOwner,
+            skillRepo,
+            skillName,
+            // Use fresh Next.js for queued sessions
+            targetOwner: "_create",
+            targetRepo: "nextjs",
+            cliProvider: "claude",
+            anthropicApiKey: storedApiKey,
+          }),
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || "Failed to create sandbox");
+        }
+
+        const data = await response.json();
+
+        // Register the sandbox
+        const registerResult = await registerSandboxMutation({
+          userId,
+          sandboxId: data.sandboxId,
+          ttydUrl: data.ttydUrl,
+          skill: claimResult.skill!,
+          cliProvider: "claude",
+        });
+
+        if (!registerResult.success) {
+          // Clean up Vercel sandbox
+          try {
+            await fetch("/api/sandbox", {
+              method: "DELETE",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ sandboxId: data.sandboxId }),
+            });
+          } catch {
+            // Best effort cleanup
+          }
+          throw new Error(registerResult.error || "Failed to register sandbox");
+        }
+
+        setFailedClaimInfo(null);
+      } catch (error) {
+        setLocalError(
+          error instanceof Error ? error.message : "Failed to create sandbox"
+        );
+      } finally {
+        fulfillingQueueRef.current = false;
+        setIsFulfillingQueue(false);
+      }
+    };
+
+    fulfillQueue();
+  }, [
+    sandboxState,
+    userId,
+    claimQueueSlotMutation,
+    cancelQueueMutation,
+    registerSandboxMutation,
+  ]);
+
   const handleKillSandbox = useCallback(async () => {
-    if (!sandboxState.sandboxId || isKilling) return;
+    if (isKilling) return;
 
     setIsKilling(true);
     if (timerRef.current) {
@@ -73,19 +305,22 @@ export function SandboxPage({
       timerRef.current = null;
     }
     try {
-      await fetch("/api/sandbox", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sandboxId: sandboxState.sandboxId }),
-      });
+      await stopSandboxMutation({ userId });
     } catch (error) {
       console.error("Failed to kill sandbox:", error);
     } finally {
-      setSandboxState({ status: "idle" });
       setTimeRemaining(SESSION_DURATION_SECONDS);
       setIsKilling(false);
     }
-  }, [sandboxState.sandboxId, isKilling]);
+  }, [isKilling, stopSandboxMutation, userId]);
+
+  const handleCancelQueue = useCallback(async () => {
+    try {
+      await cancelQueueMutation({ userId });
+    } catch (error) {
+      console.error("Failed to cancel queue:", error);
+    }
+  }, [cancelQueueMutation, userId]);
 
   // Session timer - countdown and auto-kill
   useEffect(() => {
@@ -94,19 +329,42 @@ export function SandboxPage({
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
+      timerSandboxIdRef.current = null;
       return;
     }
 
-    setTimeRemaining(SESSION_DURATION_SECONDS);
-    timerRef.current = setInterval(() => {
-      setTimeRemaining((prev) => {
-        if (prev <= 1) {
-          handleKillSandbox();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    const currentSandboxId =
+      "sandboxId" in sandboxState ? sandboxState.sandboxId : null;
+
+    // If this is a different sandbox than what we're timing, reset the timer
+    if (currentSandboxId !== timerSandboxIdRef.current) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      timerSandboxIdRef.current = currentSandboxId;
+
+      // Calculate remaining time from expiresAt
+      if ("expiresAt" in sandboxState && sandboxState.expiresAt) {
+        const remaining = Math.max(
+          0,
+          Math.floor((sandboxState.expiresAt - Date.now()) / 1000)
+        );
+        setTimeRemaining(remaining);
+      } else {
+        setTimeRemaining(SESSION_DURATION_SECONDS);
+      }
+
+      timerRef.current = setInterval(() => {
+        setTimeRemaining((prev) => {
+          if (prev <= 1) {
+            handleKillSandbox();
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
 
     return () => {
       if (timerRef.current) {
@@ -114,7 +372,7 @@ export function SandboxPage({
         timerRef.current = null;
       }
     };
-  }, [sandboxState.status, handleKillSandbox]);
+  }, [sandboxState, handleKillSandbox]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -133,21 +391,51 @@ export function SandboxPage({
     return { owner: match[1], repo: match[2].replace(/\.git$/, "") };
   })();
 
-  const targetOwner = selectedPlayground?.owner ?? customRepo?.owner;
-  const targetRepo = selectedPlayground?.repo ?? customRepo?.repo;
+  // If we have a valid GitHub repo, use it exclusively (disable playground selection)
+  const hasGithubRepo = customRepo !== null;
+  const targetOwner = hasGithubRepo
+    ? customRepo.owner
+    : selectedPlayground?.owner;
+  const targetRepo = hasGithubRepo ? customRepo.repo : selectedPlayground?.repo;
+
   // OpenCode doesn't require API key, Claude does
   const canBoot =
     activeSkill.trim() &&
     targetOwner &&
     targetRepo &&
-    (cliProvider === "opencode" || apiKey.trim());
+    (cliProvider === "opencode" || apiKey.trim()) &&
+    sandboxState.status === "idle" &&
+    !isBooting;
 
   const handleBoot = async () => {
-    if (!canBoot) return;
+    if (!canBoot || !targetOwner || !targetRepo) return;
 
-    setSandboxState({ status: "creating" });
+    setLocalError(null);
+    setIsBooting(true);
+
+    const skill = `${owner}/${repo}/${activeSkill.trim()}`;
 
     try {
+      // Check if at capacity
+      if (
+        sandboxState.status === "idle" &&
+        "hasCapacity" in sandboxState &&
+        !sandboxState.hasCapacity
+      ) {
+        // Add to queue instead
+        const result = await addToQueueMutation({
+          userId,
+          skill,
+          cliProvider,
+        });
+
+        if (!result.success) {
+          throw new Error(result.error || "Failed to join queue");
+        }
+        return;
+      }
+
+      // Step 1: Create sandbox via API first
       const response = await fetch("/api/sandbox", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -158,7 +446,9 @@ export function SandboxPage({
           targetOwner,
           targetRepo,
           cliProvider,
-          ...(cliProvider === "claude" && { anthropicApiKey: apiKey.trim() }),
+          ...(cliProvider === "claude" && {
+            anthropicApiKey: apiKey.trim(),
+          }),
         }),
       });
 
@@ -168,20 +458,47 @@ export function SandboxPage({
       }
 
       const data = await response.json();
-      setSandboxState({
-        status: "ready",
+
+      // Step 2: Register in Convex with complete data
+      const registerResult = await registerSandboxMutation({
+        userId,
         sandboxId: data.sandboxId,
         ttydUrl: data.ttydUrl,
+        skill,
+        cliProvider,
       });
+
+      if (!registerResult.success) {
+        // Clean up the Vercel sandbox since we couldn't register it
+        try {
+          await fetch("/api/sandbox", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sandboxId: data.sandboxId }),
+          });
+        } catch {
+          // Best effort cleanup, ignore errors
+        }
+
+        if (registerResult.error === "at_capacity") {
+          // Race condition - add to queue instead
+          await addToQueueMutation({ userId, skill, cliProvider });
+        } else {
+          throw new Error(registerResult.error || "Failed to register sandbox");
+        }
+      }
     } catch (error) {
-      setSandboxState({
-        status: "error",
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
+      setLocalError(
+        error instanceof Error ? error.message : "Failed to create sandbox"
+      );
+    } finally {
+      setIsBooting(false);
     }
   };
 
   const getButtonText = () => {
+    if (isBooting) return "Creating...";
+    if (sandboxState.status !== "idle") return "Sandbox Active";
     if (!activeSkill.trim()) return "Enter a skill name";
     if (!targetOwner || !targetRepo) return "Select a repository";
     if (cliProvider === "claude" && !apiKey.trim()) return "Enter your API key";
@@ -189,6 +506,14 @@ export function SandboxPage({
       selectedPlayground?.title ?? `${targetOwner}/${targetRepo}`;
     const cliName = cliProvider === "opencode" ? "OpenCode" : "Claude";
     return `Boot ${repoName} with ${cliName}`;
+  };
+
+  // Get estimated wait time for queue
+  const getEstimatedWait = (position: number) => {
+    const minutes = Math.ceil(position * 1.5);
+    if (minutes < 1) return "less than a minute";
+    if (minutes === 1) return "about 1 minute";
+    return `about ${minutes} minutes`;
   };
 
   return (
@@ -252,247 +577,380 @@ export function SandboxPage({
           </div>
         </div>
 
-        {/* Sandbox setup area - shown when idle */}
-        {sandboxState.status === "idle" && (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleBoot();
-            }}
-          >
-            {/* Skill input (only if not provided in URL) */}
-            {!skillFromUrl && (
-              <div className="mb-6">
-                <label className="block text-sm text-gray-400 mb-2">
-                  Enter a skill name from this repository:
-                </label>
-                <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">
-                    --skill
-                  </span>
-                  <input
-                    type="text"
-                    value={skillInput}
-                    onChange={(e) => setSkillInput(e.target.value)}
-                    placeholder="rag-implementation"
-                    className="w-full bg-black border border-white/20 p-4 pl-20 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none"
-                    autoFocus
-                  />
-                </div>
-                <p className="mt-2 text-xs text-gray-600">
-                  Tip: Check the repository for available skills in skills/ or
-                  .cursor/skills/
-                </p>
-              </div>
-            )}
-
-            {/* Select a playground repo */}
-            <div className="mb-6">
-              <label className="block text-sm text-gray-400 mb-2">
-                1. Select a repository to use the skill on:
-              </label>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {PLAYGROUNDS.map((pg) => {
-                  const isSelected = selectedPlayground?.id === pg.id;
-                  return (
-                    <div
-                      key={pg.id}
-                      onClick={() => setSelectedPlayground(pg)}
-                      className={`border p-4 cursor-pointer transition-colors ${
-                        isSelected
-                          ? "border-orange-500 bg-orange-500/10"
-                          : "border-white/10 hover:border-white/30"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between">
-                        <h3
-                          className={`text-base font-bold mb-1 ${isSelected ? "text-orange-500" : "text-white"}`}
-                        >
-                          {pg.title}
-                        </h3>
-                        <a
-                          href={`https://github.com/${pg.owner}/${pg.repo}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="text-gray-600 hover:text-white"
-                        >
-                          ↗
-                        </a>
-                      </div>
-                      <p className="text-xs text-gray-500">{pg.description}</p>
-                      <div
-                        className={`mt-2 text-[10px] tracking-wider ${isSelected ? "text-orange-500/70" : "text-gray-600"}`}
-                      >
-                        {isSelected ? "[ SELECTED ]" : `${pg.owner}/${pg.repo}`}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Custom GitHub URL input */}
-              <div className="mt-4">
-                <div className="text-center text-xs text-gray-500 mb-3 tracking-wider">
-                  — OR ENTER A PUBLIC GITHUB URL —
-                </div>
-                <input
-                  type="text"
-                  value={customRepoUrl}
-                  onChange={(e) => {
-                    setCustomRepoUrl(e.target.value);
-                    if (e.target.value.trim()) setSelectedPlayground(null);
-                  }}
-                  placeholder="https://github.com/owner/repo"
-                  className={`w-full bg-black border p-4 text-white placeholder:text-gray-600 focus:outline-none font-mono ${
-                    customRepoUrl.trim() && !selectedPlayground
-                      ? "border-orange-500"
-                      : "border-white/20 focus:border-orange-500"
-                  }`}
-                />
-              </div>
-            </div>
-
-            {/* CLI Provider Selection */}
-            <div className="mb-6">
-              <label className="block text-sm text-gray-400 mb-2">
-                2. Choose your AI coding assistant:
-              </label>
-              <div className="grid grid-cols-2 gap-4">
-                {/* OpenCode Option */}
-                <div
-                  onClick={() => setCLIProvider("opencode")}
-                  className={`border p-4 cursor-pointer transition-colors ${
-                    cliProvider === "opencode"
-                      ? "border-green-500 bg-green-500/10"
-                      : "border-white/10 hover:border-white/30"
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <h3
-                      className={`text-base font-bold ${cliProvider === "opencode" ? "text-green-500" : "text-white"}`}
-                    >
-                      OpenCode
-                    </h3>
-                    <span className="text-[10px] px-2 py-0.5 bg-green-500/20 text-green-400 border border-green-500/30">
-                      FREE
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-500">
-                    Free AI coding CLI. No API key required.
-                  </p>
-                  <div
-                    className={`mt-2 text-[10px] tracking-wider ${cliProvider === "opencode" ? "text-green-500/70" : "text-gray-600"}`}
-                  >
-                    {cliProvider === "opencode"
-                      ? "[ SELECTED ]"
-                      : "gpt-5-nano model"}
-                  </div>
-                </div>
-
-                {/* Claude Option */}
-                <div
-                  onClick={() => setCLIProvider("claude")}
-                  className={`border p-4 cursor-pointer transition-colors ${
-                    cliProvider === "claude"
-                      ? "border-orange-500 bg-orange-500/10"
-                      : "border-white/10 hover:border-white/30"
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <h3
-                      className={`text-base font-bold ${cliProvider === "claude" ? "text-orange-500" : "text-white"}`}
-                    >
-                      Claude
-                    </h3>
-                    <span className="text-[10px] px-2 py-0.5 bg-orange-500/20 text-orange-400 border border-orange-500/30">
-                      API KEY
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-500">
-                    Anthropic Claude CLI. Requires API key.
-                  </p>
-                  <div
-                    className={`mt-2 text-[10px] tracking-wider ${cliProvider === "claude" ? "text-orange-500/70" : "text-gray-600"}`}
-                  >
-                    {cliProvider === "claude"
-                      ? "[ SELECTED ]"
-                      : "claude-sonnet-4"}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Anthropic API Key - Only shown for Claude */}
-            {cliProvider === "claude" && (
-              <div className="mb-6">
-                <label className="block text-sm text-gray-400 mb-2">
-                  3. Enter your Anthropic API key:
-                </label>
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="sk-ant-xxxxx..."
-                  className="w-full bg-black border border-white/20 p-4 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none font-mono"
-                />
-                <div className="mt-3 flex items-center justify-between">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={rememberApiKey}
-                      onChange={(e) => setRememberApiKey(e.target.checked)}
-                      className="w-4 h-4 bg-black border border-white/20 appearance-none cursor-pointer checked:bg-orange-500 checked:border-orange-500 relative after:content-[''] after:absolute after:hidden checked:after:block after:left-[5px] after:top-[2px] after:w-[4px] after:h-[8px] after:border-black after:border-r-2 after:border-b-2 after:rotate-45"
-                    />
-                    <span className="text-xs text-gray-500">
-                      Remember my API key
-                    </span>
-                  </label>
-                  {rememberApiKey && apiKey && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setApiKey("");
-                        setRememberApiKey(false);
-                      }}
-                      className="text-xs text-red-500/70 hover:text-red-500"
-                    >
-                      Clear saved key
-                    </button>
-                  )}
-                </div>
-                <p className="mt-2 text-xs text-gray-600">
-                  {rememberApiKey
-                    ? "Stored locally in your browser."
-                    : "Your API key is sent securely to the sandbox."}{" "}
-                  <a
-                    href="https://console.anthropic.com/settings/keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-orange-500/70 hover:text-orange-500"
-                  >
-                    Get an API key
-                  </a>
-                </p>
-              </div>
-            )}
-
-            {/* Boot button */}
-            <button
-              type="submit"
-              disabled={!canBoot}
-              className={`w-full mt-6 py-6 border text-lg tracking-widest uppercase ${
-                canBoot
-                  ? "border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-black"
-                  : "border-white/10 text-white/30 cursor-not-allowed"
-              }`}
-            >
-              {getButtonText()}
-            </button>
-          </form>
+        {/* Active sandbox count indicator */}
+        {activeSandboxCount !== undefined && (
+          <div className="mb-4 text-xs text-gray-500 text-right">
+            {activeSandboxCount}/150 sandboxes active
+          </div>
         )}
 
-        {sandboxState.status === "creating" && (
+        {/* Error message */}
+        {localError && (
+          <div className="mb-6 border border-red-500/50 p-4">
+            <p className="text-red-500 text-sm">{localError}</p>
+            {failedClaimInfo && (
+              <p className="mt-2 text-xs text-gray-400">
+                You left the queue when your slot was ready. You can re-join at
+                the back of the queue.
+              </p>
+            )}
+            <div className="mt-2 flex flex-wrap gap-2">
+              {failedClaimInfo && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await addToQueueMutation({
+                        userId,
+                        skill: failedClaimInfo.skill,
+                        cliProvider: failedClaimInfo.cliProvider,
+                      });
+                      setLocalError(null);
+                      setFailedClaimInfo(null);
+                    } catch (e) {
+                      console.error("Re-join queue failed:", e);
+                    }
+                  }}
+                  className="text-xs px-3 py-1.5 border border-orange-500/50 text-orange-500 hover:bg-orange-500/10"
+                >
+                  Re-join queue
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setLocalError(null);
+                  setFailedClaimInfo(null);
+                }}
+                className="text-xs text-gray-400 hover:text-white"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Sandbox setup area - shown when idle */}
+        {(sandboxState.status === "idle" ||
+          sandboxState.status === "loading") &&
+          !isBooting && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleBoot();
+              }}
+            >
+              {/* Skill input (only if not provided in URL) */}
+              {!skillFromUrl && (
+                <div className="mb-6">
+                  <label className="block text-sm text-gray-400 mb-2">
+                    Enter a skill name from this repository:
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">
+                      --skill
+                    </span>
+                    <input
+                      type="text"
+                      value={skillInput}
+                      onChange={(e) => setSkillInput(e.target.value)}
+                      placeholder="rag-implementation"
+                      className="w-full bg-black border border-white/20 p-4 pl-20 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none"
+                      autoFocus
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-gray-600">
+                    Tip: Check the repository for available skills in skills/ or
+                    .cursor/skills/
+                  </p>
+                </div>
+              )}
+
+              {/* Select a playground repo */}
+              <div className="mb-6">
+                <label className="block text-sm text-gray-400 mb-2">
+                  1. Select a repository to use the skill on:
+                </label>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {PLAYGROUNDS.map((pg) => {
+                    const isSelected = selectedPlayground?.id === pg.id;
+                    const isDisabled = hasGithubRepo;
+                    return (
+                      <div
+                        key={pg.id}
+                        onClick={() => !isDisabled && setSelectedPlayground(pg)}
+                        className={`border p-4 transition-colors ${
+                          isDisabled
+                            ? "cursor-not-allowed opacity-40 border-white/10"
+                            : isSelected
+                            ? "border-orange-500 bg-orange-500/10 cursor-pointer"
+                            : "border-white/10 hover:border-white/30 cursor-pointer"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between">
+                          <h3
+                            className={`text-base font-bold mb-1 ${
+                              isSelected ? "text-orange-500" : "text-white"
+                            }`}
+                          >
+                            {pg.title}
+                          </h3>
+                          <a
+                            href={`https://github.com/${pg.owner}/${pg.repo}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-gray-600 hover:text-white"
+                          >
+                            ↗
+                          </a>
+                        </div>
+                        <p className="text-xs text-gray-500">
+                          {pg.description}
+                        </p>
+                        <div
+                          className={`mt-2 text-[10px] tracking-wider ${
+                            isSelected ? "text-orange-500/70" : "text-gray-600"
+                          }`}
+                        >
+                          {isSelected
+                            ? "[ SELECTED ]"
+                            : `${pg.owner}/${pg.repo}`}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Custom GitHub URL input */}
+                <div className="mt-4">
+                  <div className="text-center text-xs text-gray-500 mb-3 tracking-wider">
+                    — OR ENTER A PUBLIC GITHUB URL —
+                  </div>
+                  <input
+                    type="text"
+                    value={customRepoUrl}
+                    onChange={(e) => {
+                      const newValue = e.target.value;
+                      setCustomRepoUrl(newValue);
+                      // Clear playground selection when entering a custom URL
+                      if (newValue.trim()) {
+                        setSelectedPlayground(null);
+                      }
+                    }}
+                    placeholder="https://github.com/owner/repo"
+                    className={`w-full bg-black border p-4 text-white placeholder:text-gray-600 focus:outline-none font-mono ${
+                      hasGithubRepo
+                        ? "border-orange-500"
+                        : "border-white/20 focus:border-orange-500"
+                    }`}
+                  />
+                  {hasGithubRepo && (
+                    <p className="mt-2 text-xs text-orange-500/70">
+                      Using custom repository: {customRepo.owner}/
+                      {customRepo.repo}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* CLI Provider Selection */}
+              <div className="mb-6">
+                <label className="block text-sm text-gray-400 mb-2">
+                  2. Choose your AI coding assistant:
+                </label>
+                <div className="grid grid-cols-2 gap-4">
+                  {/* OpenCode Option */}
+                  <div
+                    onClick={() => setCLIProvider("opencode")}
+                    className={`border p-4 cursor-pointer transition-colors ${
+                      cliProvider === "opencode"
+                        ? "border-green-500 bg-green-500/10"
+                        : "border-white/10 hover:border-white/30"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <h3
+                        className={`text-base font-bold ${
+                          cliProvider === "opencode"
+                            ? "text-green-500"
+                            : "text-white"
+                        }`}
+                      >
+                        OpenCode
+                      </h3>
+                      <span className="text-[10px] px-2 py-0.5 bg-green-500/20 text-green-400 border border-green-500/30">
+                        FREE
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      Free AI coding CLI. No API key required.
+                    </p>
+                    <div
+                      className={`mt-2 text-[10px] tracking-wider ${
+                        cliProvider === "opencode"
+                          ? "text-green-500/70"
+                          : "text-gray-600"
+                      }`}
+                    >
+                      {cliProvider === "opencode"
+                        ? "[ SELECTED ]"
+                        : "gpt-5-nano model"}
+                    </div>
+                  </div>
+
+                  {/* Claude Option */}
+                  <div
+                    onClick={() => setCLIProvider("claude")}
+                    className={`border p-4 cursor-pointer transition-colors ${
+                      cliProvider === "claude"
+                        ? "border-orange-500 bg-orange-500/10"
+                        : "border-white/10 hover:border-white/30"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <h3
+                        className={`text-base font-bold ${
+                          cliProvider === "claude"
+                            ? "text-orange-500"
+                            : "text-white"
+                        }`}
+                      >
+                        Claude
+                      </h3>
+                      <span className="text-[10px] px-2 py-0.5 bg-orange-500/20 text-orange-400 border border-orange-500/30">
+                        API KEY
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      Anthropic Claude CLI. Requires API key.
+                    </p>
+                    <div
+                      className={`mt-2 text-[10px] tracking-wider ${
+                        cliProvider === "claude"
+                          ? "text-orange-500/70"
+                          : "text-gray-600"
+                      }`}
+                    >
+                      {cliProvider === "claude"
+                        ? "[ SELECTED ]"
+                        : "claude-sonnet-4"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Anthropic API Key - Only shown for Claude */}
+              {cliProvider === "claude" && (
+                <div className="mb-6">
+                  <label className="block text-sm text-gray-400 mb-2">
+                    3. Enter your Anthropic API key:
+                  </label>
+                  <input
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="sk-ant-xxxxx..."
+                    className="w-full bg-black border border-white/20 p-4 text-white placeholder:text-gray-600 focus:border-orange-500 focus:outline-none font-mono"
+                  />
+                  <div className="mt-3 flex items-center justify-between">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={rememberApiKey}
+                        onChange={(e) => setRememberApiKey(e.target.checked)}
+                        className="w-4 h-4 bg-black border border-white/20 appearance-none cursor-pointer checked:bg-orange-500 checked:border-orange-500 relative after:content-[''] after:absolute after:hidden checked:after:block after:left-[5px] after:top-[2px] after:w-[4px] after:h-[8px] after:border-black after:border-r-2 after:border-b-2 after:rotate-45"
+                      />
+                      <span className="text-xs text-gray-500">
+                        Remember my API key
+                      </span>
+                    </label>
+                    {rememberApiKey && apiKey && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setApiKey("");
+                          setRememberApiKey(false);
+                        }}
+                        className="text-xs text-red-500/70 hover:text-red-500"
+                      >
+                        Clear saved key
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-2 text-xs text-gray-600">
+                    {rememberApiKey
+                      ? "Stored locally in your browser."
+                      : "Your API key is sent securely to the sandbox."}{" "}
+                    <a
+                      href="https://console.anthropic.com/settings/keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-orange-500/70 hover:text-orange-500"
+                    >
+                      Get an API key
+                    </a>
+                  </p>
+                </div>
+              )}
+
+              {/* Boot button */}
+              <button
+                type="submit"
+                disabled={!canBoot}
+                className={`w-full mt-6 py-6 border text-lg tracking-widest uppercase ${
+                  canBoot
+                    ? "border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-black"
+                    : "border-white/10 text-white/30 cursor-not-allowed"
+                }`}
+              >
+                {getButtonText()}
+              </button>
+            </form>
+          )}
+
+        {/* Queue status - shown when user is waiting in queue */}
+        {sandboxState.status === "queued" && !isFulfillingQueue && (
+          <div className="border border-yellow-500/50 p-8 text-center">
+            <div className="text-yellow-500 text-xl mb-4">
+              ⏳ You&apos;re in the Queue
+            </div>
+            <div className="text-4xl font-bold text-yellow-400 mb-2">
+              #{sandboxState.position}
+            </div>
+            <p className="text-gray-400 text-sm mb-4">
+              Estimated wait: {getEstimatedWait(sandboxState.position)}
+            </p>
+            <p className="text-gray-600 text-xs mb-4">
+              We&apos;re at capacity (150 sandboxes). You&apos;ll be
+              automatically moved forward as slots open up.
+            </p>
+            <button
+              onClick={handleCancelQueue}
+              className="px-4 py-2 border border-white/20 hover:border-red-500/50 hover:text-red-500 transition-colors text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {/* Queue fulfillment - shown when creating sandbox from queue (Claude BYOK) */}
+        {isFulfillingQueue && (
+          <div className="border border-orange-500/50 p-8 text-center">
+            <div className="text-orange-500 text-xl mb-4 animate-pulse">
+              ◐ Your Turn - Creating Sandbox...
+            </div>
+            <p className="text-gray-500 text-sm">
+              Cloning repository, installing dependencies, and starting terminal
+              with your API key...
+            </p>
+            <div className="mt-4 text-xs text-gray-600">
+              This may take 30-60 seconds
+            </div>
+          </div>
+        )}
+
+        {/* Creating state - shown during API call */}
+        {isBooting && (
           <div className="border border-orange-500/50 p-8 text-center">
             <div className="text-orange-500 text-xl mb-4 animate-pulse">
               ◐ Creating Sandbox...
@@ -507,19 +965,7 @@ export function SandboxPage({
           </div>
         )}
 
-        {sandboxState.status === "error" && (
-          <div className="border border-red-500/50 p-6">
-            <p className="text-red-500 mb-4">Error: {sandboxState.error}</p>
-            <button
-              onClick={() => handleBoot()}
-              className="px-4 py-2 border border-white/20 hover:border-white transition-colors"
-            >
-              Retry
-            </button>
-          </div>
-        )}
-
-        {sandboxState.status === "ready" && sandboxState.ttydUrl && (
+        {sandboxState.status === "ready" && "ttydUrl" in sandboxState && (
           <div className="pb-8">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-gray-500">
@@ -527,7 +973,9 @@ export function SandboxPage({
               </span>
               <div className="flex items-center gap-4">
                 <span
-                  className={`text-xs font-mono ${timeRemaining <= 30 ? "text-red-500" : "text-orange-400"}`}
+                  className={`text-xs font-mono ${
+                    timeRemaining <= 30 ? "text-red-500" : "text-orange-400"
+                  }`}
                 >
                   {formatTime(timeRemaining)}
                 </span>

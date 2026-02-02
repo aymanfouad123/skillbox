@@ -4,13 +4,15 @@ import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Github } from "lucide-react";
 import { SkillsCarousel } from "./components/SkillsCarousel";
-import { PlaygroundBoxes } from "./components/PlaygroundBoxes";
+import { useQuery } from "convex/react";
+import { api } from "../convex/_generated/api";
 
 export default function Home() {
   const [searchValue, setSearchValue] = useState("");
   const [isBooting, setIsBooting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
+  const totalSandboxes = useQuery(api.analytics.getTotalSandboxes);
 
   const handleBoot = (path: string) => {
     // Parse path like "skillbox.sh/owner/repo/skill" or "owner/repo/skill"
@@ -60,19 +62,25 @@ export default function Home() {
         </div>
 
         {/* The Action Hook */}
-        <div className="mb-12">
+        <div className="mb-8">
           <p className="text-orange-400/80 mb-4 text-sm tracking-widest uppercase">
-            Tryout Agent Skills
+            Tryout An Agent Skill
           </p>
           <form onSubmit={handleSubmit}>
             <div
               className={`
                 group relative border p-4 transition-all duration-300
-                ${isBooting ? "border-accent bg-accent-muted" : "border-white/20 hover:border-accent/50"}
+                ${
+                  isBooting
+                    ? "border-accent bg-accent-muted"
+                    : "border-white/20 hover:border-accent/50"
+                }
               `}
             >
               <span
-                className={`mr-2 transition-colors ${isBooting ? "text-accent" : "text-white/40"}`}
+                className={`mr-2 transition-colors ${
+                  isBooting ? "text-accent" : "text-white/40"
+                }`}
               >
                 $
               </span>
@@ -87,7 +95,11 @@ export default function Home() {
               <div
                 className={`
                   absolute right-4 top-1/2 -translate-y-1/2 text-[10px] tracking-wider transition-all
-                  ${isBooting ? "text-accent animate-pulse block" : "text-gray-500 hidden group-hover:block"}
+                  ${
+                    isBooting
+                      ? "text-accent animate-pulse block"
+                      : "text-gray-500 hidden group-hover:block"
+                  }
                 `}
               >
                 {isBooting ? "BOOTING..." : "PRESS ENTER TO BOOT"}
@@ -96,9 +108,27 @@ export default function Home() {
           </form>
         </div>
 
-        {/* Playground Boxes - Try skills in real Vercel production */}
-        <PlaygroundBoxes />
+        <div className="flex items-center justify-center gap-4 py-6 text-xs font-light tracking-[0.2em] text-gray-500 uppercase">
+          {/* The Pulse */}
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-500 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-600"></span>
+          </span>
 
+          {/* The Stats */}
+          <div className="flex items-center gap-2">
+            <span className="text-white font-medium text-xl tabular-nums">
+              {totalSandboxes !== undefined
+                ? totalSandboxes.toLocaleString()
+                : "—"}
+            </span>
+            <span>Global Sandboxes Orchestrated</span>
+          </div>
+
+          {/* Optional: The Divider and Live Status */}
+          <span className="text-white/10">|</span>
+          <span className="text-orange-500/80 animate-pulse">System Live</span>
+        </div>
         {/* Top Skills Carousel */}
         <SkillsCarousel onBoot={handleBoot} />
       </div>
