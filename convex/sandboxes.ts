@@ -6,20 +6,11 @@ import {
   internalAction,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-
-// Maximum number of concurrent sandboxes
-const MAX_SANDBOXES = 150;
-
-// Heartbeat timeout for Claude users in queue (30 seconds)
-const HEARTBEAT_TIMEOUT_MS = 30 * 1000;
-
-// Claude fulfillment timeout - if ready but no boot within 15s, kick to back
-const CLAUDE_FULFILL_TIMEOUT_MS = 15 * 1000;
-
-// Sandbox session duration in milliseconds (6 minutes)
-// Note: The Vercel backend uses 7 minutes to account for ~60-90s setup time.
-// This ensures users get the full 6 minutes of actual usage time.
-const SESSION_DURATION_MS = 6 * 60 * 1000;
+import {
+  MAX_SANDBOXES,
+  HEARTBEAT_TIMEOUT_MS,
+  SESSION_DURATION_MS,
+} from "./constants";
 
 // =============================================================================
 // Queries
