@@ -1,15 +1,13 @@
 import { v } from "convex/values";
 import { query, internalMutation, internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
-
-// Maximum number of concurrent sandboxes
-const MAX_SANDBOXES = 150;
-
-// Maximum retry attempts before giving up
-const MAX_RETRIES = 2;
-
-// Claude fulfillment timeout - if ready but no boot within 15s, kick to back
-const CLAUDE_FULFILL_TIMEOUT_MS = 15 * 1000;
+import {
+  MAX_SANDBOXES,
+  MAX_RETRIES,
+  CLAUDE_FULFILL_TIMEOUT_MS,
+  HEARTBEAT_TIMEOUT_MS,
+  PROCESSING_TIMEOUT_MS,
+} from "./constants";
 
 // =============================================================================
 // Queries
@@ -33,10 +31,25 @@ export const getQueueLength = query({
 /**
  * Process queue - create sandboxes for waiting users when slots available
  * NOTE: Claude entries are handled client-side (BYOK - API key in localStorage)
+ * OpenCode entries are reserved with processingStartedAt so the same slot
+ * isn't processed twice if the cron runs before the action completes.
  */
 export const processQueue = internalMutation({
   args: {},
   handler: async (ctx) => {
+    const now = Date.now();
+
+    // Clear stuck reservations: entries that have been "processing" too long
+    const allQueue = await ctx.db.query("queue").collect();
+    for (const entry of allQueue) {
+      if (
+        entry.processingStartedAt &&
+        now - entry.processingStartedAt > PROCESSING_TIMEOUT_MS
+      ) {
+        await ctx.db.patch(entry._id, { processingStartedAt: undefined });
+      }
+    }
+
     // Count active sandboxes
     const active = await ctx.db
       .query("sandboxes")
@@ -48,28 +61,34 @@ export const processQueue = internalMutation({
       return { processed: 0 };
     }
 
-    // Get next entries by position (FIFO)
-    const waiting = await ctx.db
+    // Get candidates by position (FIFO); take extra to allow filtering by reservation
+    const candidates = await ctx.db
       .query("queue")
       .withIndex("by_position")
       .order("asc")
-      .take(availableSlots);
+      .take(availableSlots + 50);
+
+    // Only process entries not currently reserved (or Claude, which we skip for server-side work)
+    const waiting = candidates.filter(
+      (entry) => entry.cliProvider === "claude" || !entry.processingStartedAt
+    );
 
     let processed = 0;
-    const now = Date.now();
 
     for (const entry of waiting) {
       // Skip Claude entries - they're handled client-side via claimQueueSlot
-      // because API keys are stored in browser localStorage (BYOK security)
       if (entry.cliProvider === "claude") {
-        // Mark when Claude user became ready to fulfill (if not already set)
         if (!entry.readyToFulfillAt) {
           await ctx.db.patch(entry._id, { readyToFulfillAt: now });
         }
         continue;
       }
 
-      // Schedule sandbox creation for OpenCode entries
+      if (processed >= availableSlots) break;
+
+      // Reserve so next cron run won't pick this entry again
+      await ctx.db.patch(entry._id, { processingStartedAt: now });
+
       await ctx.scheduler.runAfter(0, internal.queue.createSandboxFromQueue, {
         queueId: entry._id,
         userId: entry.userId,
@@ -98,14 +117,13 @@ export const handleQueueFailure = internalMutation({
 
     if (args.currentRetryCount >= MAX_RETRIES) {
       // Max retries exceeded, remove from queue
-      console.log(
-        `Queue entry ${args.queueId} exceeded max retries, removing`
-      );
+      console.log(`Queue entry ${args.queueId} exceeded max retries, removing`);
       await ctx.db.delete(args.queueId);
     } else {
-      // Increment retry count, will be picked up on next queue processing
+      // Increment retry count and clear reservation so entry can be picked again
       await ctx.db.patch(args.queueId, {
         retryCount: args.currentRetryCount + 1,
+        processingStartedAt: undefined,
       });
       console.log(
         `Queue entry ${args.queueId} retry count: ${args.currentRetryCount + 1}`
@@ -123,14 +141,12 @@ export const cleanupStaleClaudeEntries = internalMutation({
   handler: async (ctx) => {
     const now = Date.now();
 
-    // Find Claude entries with expired heartbeats
-    const allQueue = await ctx.db.query("queue").collect();
-    const staleEntries = allQueue.filter(
-      (entry) =>
-        entry.cliProvider === "claude" &&
-        entry.queueExpiresAt &&
-        entry.queueExpiresAt < now
-    );
+    const staleEntries = await ctx.db
+      .query("queue")
+      .withIndex("by_cliProvider_queueExpiresAt", (q) =>
+        q.eq("cliProvider", "claude").lt("queueExpiresAt", now)
+      )
+      .collect();
 
     let removed = 0;
     for (const entry of staleEntries) {
@@ -141,7 +157,7 @@ export const cleanupStaleClaudeEntries = internalMutation({
       removed++;
     }
 
-    return { checked: allQueue.length, removed };
+    return { removed };
   },
 });
 
@@ -175,7 +191,9 @@ export const handleSlowClaudeUsers = internalMutation({
 
     // Kick to back of line: delete and re-add with new position
     console.log(
-      `Kicking slow Claude user ${firstEntry.userId} to back of queue (ready for ${Math.round(readyDuration / 1000)}s)`
+      `Kicking slow Claude user ${
+        firstEntry.userId
+      } to back of queue (ready for ${Math.round(readyDuration / 1000)}s)`
     );
 
     // Get new position (back of line)
@@ -192,7 +210,7 @@ export const handleSlowClaudeUsers = internalMutation({
       position: newPosition,
       readyToFulfillAt: undefined,
       lastHeartbeat: now,
-      queueExpiresAt: now + 30 * 1000, // Reset heartbeat timeout
+      queueExpiresAt: now + HEARTBEAT_TIMEOUT_MS,
     });
 
     return { kicked: 1 };

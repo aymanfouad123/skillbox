@@ -32,6 +32,8 @@ export default defineSchema({
     cliProvider: v.union(v.literal("opencode"), v.literal("claude")),
     createdAt: v.number(),
     retryCount: v.optional(v.number()), // Track failed attempts for retry logic
+    // Reserve entry so same slot isn't processed twice (cron runs before action completes)
+    processingStartedAt: v.optional(v.number()),
     // Heartbeat fields for Claude users (BYOK - need to detect browser close)
     lastHeartbeat: v.optional(v.number()), // Last heartbeat timestamp
     queueExpiresAt: v.optional(v.number()), // Stateless expiry: lastHeartbeat + 30s
@@ -39,7 +41,8 @@ export default defineSchema({
   })
     .index("by_position", ["position"])
     .index("by_userId", ["userId"])
-    .index("by_queueExpiresAt", ["queueExpiresAt"]),
+    .index("by_queueExpiresAt", ["queueExpiresAt"])
+    .index("by_cliProvider_queueExpiresAt", ["cliProvider", "queueExpiresAt"]),
 
   // Simple analytics counter (singleton-ish, one record)
   // The hero metric: total sandboxes created
