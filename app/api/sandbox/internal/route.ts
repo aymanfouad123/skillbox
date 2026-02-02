@@ -1,5 +1,6 @@
 import { Sandbox } from "@vercel/sandbox";
 import { NextResponse } from "next/server";
+import crypto from "node:crypto";
 import ms from "ms";
 import { CLIProvider } from "../../../data/skills";
 import {
@@ -20,12 +21,43 @@ function validateInternalSecret(request: Request): boolean {
   const secret = request.headers.get("X-Internal-Secret");
   const expectedSecret = process.env.CONVEX_INTERNAL_SECRET;
 
-  // In development, allow if no secret is set
-  if (!expectedSecret && process.env.NODE_ENV === "development") {
-    return true;
+  const explicitBypass =
+    process.env.ALLOW_INTERNAL_BYPASS === "true" ||
+    process.env.SKILLBOX_ALLOW_INTERNAL_BYPASS === "true";
+
+  if (!expectedSecret) {
+    if (explicitBypass) {
+      console.warn(
+        "[internal route] Internal secret bypass active: expectedSecret is unset, NODE_ENV=%s",
+        process.env.NODE_ENV ?? "undefined"
+      );
+      return true;
+    }
+    console.warn(
+      "[internal route] CONVEX_INTERNAL_SECRET is not set; NODE_ENV=%s. Rejecting request.",
+      process.env.NODE_ENV ?? "undefined"
+    );
+    return false;
   }
 
-  return secret === expectedSecret;
+  if (secret === null || secret === "") {
+    return false;
+  }
+
+  const hashIncoming = crypto
+    .createHash("sha256")
+    .update(secret, "utf8")
+    .digest();
+  const hashExpected = crypto
+    .createHash("sha256")
+    .update(expectedSecret, "utf8")
+    .digest();
+
+  if (hashIncoming.length !== hashExpected.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(hashIncoming, hashExpected);
 }
 
 // =============================================================================

@@ -3,10 +3,13 @@ import { query, internalMutation, internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 
 // Maximum number of concurrent sandboxes
-const MAX_SANDBOXES = 100;
+const MAX_SANDBOXES = 150;
 
 // Maximum retry attempts before giving up
 const MAX_RETRIES = 2;
+
+// Claude fulfillment timeout - if ready but no boot within 15s, kick to back
+const CLAUDE_FULFILL_TIMEOUT_MS = 15 * 1000;
 
 // =============================================================================
 // Queries
@@ -29,6 +32,7 @@ export const getQueueLength = query({
 
 /**
  * Process queue - create sandboxes for waiting users when slots available
+ * NOTE: Claude entries are handled client-side (BYOK - API key in localStorage)
  */
 export const processQueue = internalMutation({
   args: {},
@@ -51,8 +55,21 @@ export const processQueue = internalMutation({
       .order("asc")
       .take(availableSlots);
 
+    let processed = 0;
+    const now = Date.now();
+
     for (const entry of waiting) {
-      // Schedule sandbox creation
+      // Skip Claude entries - they're handled client-side via claimQueueSlot
+      // because API keys are stored in browser localStorage (BYOK security)
+      if (entry.cliProvider === "claude") {
+        // Mark when Claude user became ready to fulfill (if not already set)
+        if (!entry.readyToFulfillAt) {
+          await ctx.db.patch(entry._id, { readyToFulfillAt: now });
+        }
+        continue;
+      }
+
+      // Schedule sandbox creation for OpenCode entries
       await ctx.scheduler.runAfter(0, internal.queue.createSandboxFromQueue, {
         queueId: entry._id,
         userId: entry.userId,
@@ -60,9 +77,10 @@ export const processQueue = internalMutation({
         cliProvider: entry.cliProvider,
         retryCount: entry.retryCount ?? 0,
       });
+      processed++;
     }
 
-    return { processed: waiting.length };
+    return { processed };
   },
 });
 
@@ -93,6 +111,91 @@ export const handleQueueFailure = internalMutation({
         `Queue entry ${args.queueId} retry count: ${args.currentRetryCount + 1}`
       );
     }
+  },
+});
+
+/**
+ * Clean up stale Claude queue entries (browser closed/disconnected)
+ * Uses stateless expiry: if queueExpiresAt < now, remove the entry
+ */
+export const cleanupStaleClaudeEntries = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+
+    // Find Claude entries with expired heartbeats
+    const allQueue = await ctx.db.query("queue").collect();
+    const staleEntries = allQueue.filter(
+      (entry) =>
+        entry.cliProvider === "claude" &&
+        entry.queueExpiresAt &&
+        entry.queueExpiresAt < now
+    );
+
+    let removed = 0;
+    for (const entry of staleEntries) {
+      console.log(
+        `Removing stale Claude queue entry for user ${entry.userId} (heartbeat expired)`
+      );
+      await ctx.db.delete(entry._id);
+      removed++;
+    }
+
+    return { checked: allQueue.length, removed };
+  },
+});
+
+/**
+ * Handle slow Claude users at position 1
+ * If a Claude user is ready to fulfill but hasn't booted within 15s, kick them to back of line
+ */
+export const handleSlowClaudeUsers = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+
+    // Get Claude entries at position 1 that have been ready too long
+    const queue = await ctx.db
+      .query("queue")
+      .withIndex("by_position")
+      .order("asc")
+      .collect();
+
+    // Find first Claude entry that's at position 1
+    const firstEntry = queue[0];
+    if (!firstEntry) return { kicked: 0 };
+    if (firstEntry.cliProvider !== "claude") return { kicked: 0 };
+    if (!firstEntry.readyToFulfillAt) return { kicked: 0 };
+
+    // Check if they've exceeded the fulfillment timeout
+    const readyDuration = now - firstEntry.readyToFulfillAt;
+    if (readyDuration < CLAUDE_FULFILL_TIMEOUT_MS) {
+      return { kicked: 0 };
+    }
+
+    // Kick to back of line: delete and re-add with new position
+    console.log(
+      `Kicking slow Claude user ${firstEntry.userId} to back of queue (ready for ${Math.round(readyDuration / 1000)}s)`
+    );
+
+    // Get new position (back of line)
+    const lastInQueue = await ctx.db
+      .query("queue")
+      .withIndex("by_position")
+      .order("desc")
+      .first();
+
+    const newPosition = lastInQueue ? lastInQueue.position + 1 : 1;
+
+    // Update the entry: reset position and readyToFulfillAt, refresh heartbeat
+    await ctx.db.patch(firstEntry._id, {
+      position: newPosition,
+      readyToFulfillAt: undefined,
+      lastHeartbeat: now,
+      queueExpiresAt: now + 30 * 1000, // Reset heartbeat timeout
+    });
+
+    return { kicked: 1 };
   },
 });
 
