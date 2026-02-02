@@ -85,6 +85,7 @@ export async function POST(request: Request) {
   }
 
   let sandbox: Sandbox | null = null;
+  let success = false;
 
   try {
     const body: CreateSandboxRequest = await request.json();
@@ -120,7 +121,10 @@ export async function POST(request: Request) {
     }
 
     const provider = CLI_PROVIDERS[cliProvider];
-    const isCreateNew = targetOwner === "_create";
+    // _create = sentinel from queue; create/nextjs = "New Next.js" playground
+    const isCreateNew =
+      targetOwner === "_create" ||
+      (targetOwner === "create" && targetRepo === "nextjs");
 
     console.log(
       isCreateNew
@@ -182,6 +186,7 @@ export async function POST(request: Request) {
     const ttydUrl = sandbox.domain(7681);
     console.log(`Sandbox ready: ${ttydUrl}`);
 
+    success = true;
     return NextResponse.json({
       sandboxId: sandbox.sandboxId,
       ttydUrl,
@@ -189,7 +194,14 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("Internal sandbox creation failed:", error);
-    if (sandbox) {
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : "Failed to initialize",
+      },
+      { status: 500 }
+    );
+  } finally {
+    if (sandbox != null && !success) {
       try {
         await sandbox.stop();
         console.log(`Stopped failed sandbox: ${sandbox.sandboxId}`);
@@ -197,12 +209,6 @@ export async function POST(request: Request) {
         console.error("Failed to stop sandbox:", stopErr);
       }
     }
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Failed to initialize",
-      },
-      { status: 500 }
-    );
   }
 }
 

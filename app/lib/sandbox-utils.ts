@@ -28,15 +28,17 @@ export const CLI_PROVIDERS: Record<CLIProvider, CLIProviderConfig> = {
       const projectConfig = JSON.stringify({
         model: "opencode/gpt-5-nano",
       });
-      await sandbox.runCommand({
-        cmd: "bash",
-        args: [
-          "-c",
-          `mkdir -p ~/.config/opencode && ` +
-            `echo '${globalConfig}' > ~/.config/opencode/opencode.json && ` +
-            `echo '${projectConfig}' > /vercel/sandbox/opencode.json`,
-        ],
-      });
+      await sandbox.mkDir("/home/vercel-sandbox/.config/opencode");
+      await sandbox.writeFiles([
+        {
+          path: "/home/vercel-sandbox/.config/opencode/opencode.json",
+          content: Buffer.from(globalConfig, "utf8"),
+        },
+        {
+          path: "/vercel/sandbox/opencode.json",
+          content: Buffer.from(projectConfig, "utf8"),
+        },
+      ]);
     },
     getLaunchCommand: () =>
       `FORCE_COLOR=1 ` +
@@ -58,14 +60,12 @@ export const CLI_PROVIDERS: Record<CLIProvider, CLIProviderConfig> = {
         hasCompletedOnboarding: true,
         autoUpdaterStatus: "disabled",
       });
-      await sandbox.runCommand({
-        cmd: "bash",
-        args: [
-          "-c",
-          `mkdir -p /home/vercel-sandbox/.claude && ` +
-            `echo '${configPayload}' > /home/vercel-sandbox/.claude.json`,
-        ],
-      });
+      await sandbox.writeFiles([
+        {
+          path: "/home/vercel-sandbox/.claude.json",
+          content: Buffer.from(configPayload, "utf8"),
+        },
+      ]);
     },
     getLaunchCommand: (apiKey?: string) =>
       `export ANTHROPIC_API_KEY='${apiKey}' ` +
@@ -93,11 +93,16 @@ export async function installCLI(
   const result = await sandbox.runCommand({
     cmd: provider.installCommand.cmd,
     args: provider.installCommand.args,
+    stderr: process.stderr,
+    stdout: process.stdout,
+    sudo: true,
   });
 
   if (result.exitCode !== 0) {
     const stderr = await result.stderr();
-    console.warn(`${provider.name} CLI install warning: ${stderr}`);
+    throw new Error(
+      `${provider.name} CLI install failed: exitCode ${result.exitCode}, stderr: ${stderr}`
+    );
   }
 }
 
