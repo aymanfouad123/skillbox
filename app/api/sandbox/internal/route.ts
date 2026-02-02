@@ -1,7 +1,8 @@
 import { Sandbox } from "@vercel/sandbox";
 import { NextResponse } from "next/server";
+import crypto from "node:crypto";
 import ms from "ms";
-import { CreateSandboxRequest } from "../../data/skills";
+import { CLIProvider } from "../../../data/skills";
 import {
   CLI_PROVIDERS,
   installCLI,
@@ -10,13 +11,79 @@ import {
   launchTTYD,
   waitForTTYD,
   createFreshNextJS,
-} from "../../lib/sandbox-utils";
+} from "../../../lib/sandbox-utils";
 
 // =============================================================================
-// POST Handler - Create Sandbox
+// Internal Secret Validation
+// =============================================================================
+
+function validateInternalSecret(request: Request): boolean {
+  const secret = request.headers.get("X-Internal-Secret");
+  const expectedSecret = process.env.CONVEX_INTERNAL_SECRET;
+
+  const explicitBypass =
+    process.env.ALLOW_INTERNAL_BYPASS === "true" ||
+    process.env.SKILLBOX_ALLOW_INTERNAL_BYPASS === "true";
+
+  if (!expectedSecret) {
+    if (explicitBypass) {
+      console.warn(
+        "[internal route] Internal secret bypass active: expectedSecret is unset, NODE_ENV=%s",
+        process.env.NODE_ENV ?? "undefined"
+      );
+      return true;
+    }
+    console.warn(
+      "[internal route] CONVEX_INTERNAL_SECRET is not set; NODE_ENV=%s. Rejecting request.",
+      process.env.NODE_ENV ?? "undefined"
+    );
+    return false;
+  }
+
+  if (secret === null || secret === "") {
+    return false;
+  }
+
+  const hashIncoming = crypto
+    .createHash("sha256")
+    .update(secret, "utf8")
+    .digest();
+  const hashExpected = crypto
+    .createHash("sha256")
+    .update(expectedSecret, "utf8")
+    .digest();
+
+  if (hashIncoming.length !== hashExpected.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(hashIncoming, hashExpected);
+}
+
+// =============================================================================
+// Request Body Interface
+// =============================================================================
+
+interface CreateSandboxRequest {
+  skillOwner: string;
+  skillRepo: string;
+  skillName: string;
+  targetOwner: string;
+  targetRepo: string;
+  cliProvider?: CLIProvider;
+  anthropicApiKey?: string;
+}
+
+// =============================================================================
+// POST Handler - Create Sandbox (Internal use by Convex)
 // =============================================================================
 
 export async function POST(request: Request) {
+  // Validate internal secret
+  if (!validateInternalSecret(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   let sandbox: Sandbox | null = null;
   let success = false;
 
@@ -28,11 +95,11 @@ export async function POST(request: Request) {
       skillName,
       targetOwner,
       targetRepo,
-      cliProvider = "opencode", // Default to opencode for backwards compatibility
+      cliProvider = "opencode",
       anthropicApiKey,
     } = body;
 
-    // Validation - API key only required for Claude
+    // Validation
     if (
       !skillOwner ||
       !skillRepo ||
@@ -54,24 +121,21 @@ export async function POST(request: Request) {
     }
 
     const provider = CLI_PROVIDERS[cliProvider];
-    // _create = sentinel from queue/claim flow; create/nextjs = "New Next.js" playground
+    // _create = sentinel from queue; create/nextjs = "New Next.js" playground
     const isCreateNew =
       targetOwner === "_create" ||
       (targetOwner === "create" && targetRepo === "nextjs");
 
     console.log(
       isCreateNew
-        ? `Creating sandbox with fresh ${targetRepo} project, skill ${skillName}, using ${provider.name}...`
-        : `Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}, using ${provider.name}...`
+        ? `[Internal] Creating sandbox with fresh ${targetRepo} project, skill ${skillName}, using ${provider.name}...`
+        : `[Internal] Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}, using ${provider.name}...`
     );
 
-    // 1. Create Sandbox with Vercel Sandbox SDK
-    // Note: Backend timeout includes setup time (~60-90s for Next.js creation).
-    // Frontend shows 6 minutes, but we give 7 minutes on backend to account for
-    // setup overhead, ensuring users get the full 6 minutes of actual usage.
+    // 1. Create Sandbox
+    // Backend timeout is 7 minutes to account for setup overhead.
+    // Frontend shows 6 minutes - the extra minute is buffer for setup.
     if (isCreateNew && targetRepo === "nextjs") {
-      // For fresh Next.js, create empty sandbox and run create-next-app
-      // Extra time needed for create-next-app (~90s setup)
       sandbox = await Sandbox.create({
         resources: { vcpus: 2 },
         timeout: ms("7m"),
@@ -82,7 +146,6 @@ export async function POST(request: Request) {
       console.log(`Sandbox created: ${sandbox.sandboxId}`);
       await createFreshNextJS(sandbox);
     } else {
-      // Clone existing repo for other playgrounds (~60s setup)
       sandbox = await Sandbox.create({
         source: {
           type: "git",
@@ -90,7 +153,7 @@ export async function POST(request: Request) {
           depth: 1,
         },
         resources: { vcpus: 2 },
-        timeout: ms("7m"), // Aligned with Next.js creation for consistency
+        timeout: ms("7m"), // Aligned for consistency
         ports: [7681],
         runtime: "node22",
       });
@@ -98,7 +161,7 @@ export async function POST(request: Request) {
       console.log(`Sandbox created: ${sandbox.sandboxId}`);
     }
 
-    // 2. Install CLI for selected provider
+    // 2. Install CLI
     await installCLI(sandbox, provider);
 
     // 3. Install TTYD
@@ -111,14 +174,13 @@ export async function POST(request: Request) {
     console.log(`Setting up ${provider.name} CLI configuration...`);
     await provider.configSetup(sandbox);
 
-    // 6. Launch TTYD with CLI
+    // 6. Launch TTYD
     await launchTTYD(sandbox, ttydPath, provider, anthropicApiKey);
 
-    // 7. Wait for TTYD to be ready
+    // 7. Wait for TTYD
     const ready = await waitForTTYD(sandbox);
     if (!ready) console.warn("TTYD timed out but returning URL anyway.");
 
-    // Give TTYD and CLI additional time to fully initialize
     await new Promise((resolve) => setTimeout(resolve, 3000));
 
     const ttydUrl = sandbox.domain(7681);
@@ -131,7 +193,7 @@ export async function POST(request: Request) {
       status: "ready",
     });
   } catch (error) {
-    console.error("Sandbox creation failed:", error);
+    console.error("Internal sandbox creation failed:", error);
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "Failed to initialize",
@@ -151,10 +213,15 @@ export async function POST(request: Request) {
 }
 
 // =============================================================================
-// DELETE Handler - Stop Sandbox
+// DELETE Handler - Stop Sandbox (Internal use by Convex)
 // =============================================================================
 
 export async function DELETE(request: Request) {
+  // Validate internal secret
+  if (!validateInternalSecret(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const { sandboxId } = await request.json();
 
@@ -162,11 +229,10 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "Missing sandboxId" }, { status: 400 });
     }
 
-    // Connect to existing sandbox and stop it
     const sandbox = await Sandbox.get({ sandboxId });
     await sandbox.stop();
 
-    console.log(`Sandbox stopped: ${sandboxId}`);
+    console.log(`[Internal] Sandbox stopped: ${sandboxId}`);
 
     return NextResponse.json({ success: true, sandboxId });
   } catch (error) {
