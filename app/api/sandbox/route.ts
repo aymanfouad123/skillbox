@@ -1,7 +1,9 @@
 import { Sandbox } from "@vercel/sandbox";
 import { NextResponse } from "next/server";
 import ms from "ms";
-import { CreateSandboxRequest } from "../../data/skills";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../convex/_generated/api";
+import { CreateSandboxRequest, PLAYGROUNDS } from "../../data/skills";
 import {
   CLI_PROVIDERS,
   installCLI,
@@ -10,7 +12,11 @@ import {
   launchTTYD,
   waitForTTYD,
   createFreshNextJS,
+  startDevServer,
 } from "../../lib/sandbox-utils";
+
+// Initialize Convex client for snapshot queries
+const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 // =============================================================================
 // POST Handler - Create Sandbox
@@ -54,48 +60,96 @@ export async function POST(request: Request) {
     }
 
     const provider = CLI_PROVIDERS[cliProvider];
-    // _create = sentinel from queue/claim flow; create/nextjs = "New Next.js" playground
-    const isCreateNew =
-      targetOwner === "_create" ||
-      (targetOwner === "create" && targetRepo === "nextjs");
 
-    console.log(
-      isCreateNew
-        ? `Creating sandbox with fresh ${targetRepo} project, skill ${skillName}, using ${provider.name}...`
-        : `Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}, using ${provider.name}...`
+    // 1. Resolve selected playground (map queue sentinel to create/nextjs)
+    const effectiveOwner =
+      targetOwner === "_create" || targetOwner === "fresh"
+        ? "create"
+        : targetOwner;
+    const effectiveRepo = targetRepo;
+    const playground = PLAYGROUNDS.find(
+      (p) => p.owner === effectiveOwner && p.repo === effectiveRepo
     );
 
-    // 1. Create Sandbox with Vercel Sandbox SDK
-    // Note: Backend timeout includes setup time (~60-90s for Next.js creation).
-    // Frontend shows 6 minutes, but we give 7 minutes on backend to account for
-    // setup overhead, ensuring users get the full 6 minutes of actual usage.
-    if (isCreateNew && targetRepo === "nextjs") {
-      // For fresh Next.js, create empty sandbox and run create-next-app
-      // Extra time needed for create-next-app (~90s setup)
-      sandbox = await Sandbox.create({
-        resources: { vcpus: 2 },
-        timeout: ms("7m"),
-        ports: [7681],
-        runtime: "node22",
-      });
-
-      console.log(`Sandbox created: ${sandbox.sandboxId}`);
-      await createFreshNextJS(sandbox);
+    const useSnapshot = Boolean(playground?.snapshotId);
+    if (useSnapshot) {
+      console.log(
+        `Creating sandbox from snapshot (${
+          playground!.id
+        }), skill ${skillName}, using ${provider.name}...`
+      );
     } else {
-      // Clone existing repo for other playgrounds (~60s setup)
+      const isCreateNew =
+        targetOwner === "_create" ||
+        targetOwner === "fresh" ||
+        (targetOwner === "create" && targetRepo === "nextjs");
+      console.log(
+        isCreateNew
+          ? `Creating sandbox with fresh ${targetRepo} project, skill ${skillName}, using ${provider.name}...`
+          : `Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}, using ${provider.name}...`
+      );
+    }
+
+    // Try to get snapshot from Convex first (dynamic), fall back to hardcoded
+    let snapshotId = playground?.snapshotId;
+    if (playground && process.env.NEXT_PUBLIC_CONVEX_URL) {
+      try {
+        // Dynamic import to handle case where Convex types aren't generated yet
+        const convexSnapshot = await convex.query(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (api as any).snapshots?.getSnapshot,
+          { playgroundId: playground.id }
+        );
+        if (convexSnapshot?.snapshotId) {
+          snapshotId = convexSnapshot.snapshotId;
+          console.log(`Using Convex snapshot: ${snapshotId}`);
+        }
+      } catch (err) {
+        console.log("Convex snapshot query failed, using fallback:", err);
+      }
+    }
+
+    // 2. Create Sandbox: snapshot boot (fast) or git/create-next-app (slower)
+    if (snapshotId) {
       sandbox = await Sandbox.create({
         source: {
-          type: "git",
-          url: `https://github.com/${targetOwner}/${targetRepo}.git`,
-          depth: 1,
+          type: "snapshot",
+          snapshotId,
         },
         resources: { vcpus: 2 },
-        timeout: ms("7m"), // Aligned with Next.js creation for consistency
-        ports: [7681],
-        runtime: "node22",
+        timeout: ms("7m"),
+        ports: [3000, 7681],
+        runtime: "node24",
       });
-
-      console.log(`Sandbox created: ${sandbox.sandboxId}`);
+      console.log(`Sandbox created from snapshot: ${sandbox.sandboxId}`);
+    } else {
+      const isCreateNew =
+        targetOwner === "_create" ||
+        targetOwner === "fresh" ||
+        (targetOwner === "create" && targetRepo === "nextjs");
+      if (isCreateNew && targetRepo === "nextjs") {
+        sandbox = await Sandbox.create({
+          resources: { vcpus: 2 },
+          timeout: ms("7m"),
+          ports: [3000, 7681],
+          runtime: "node24",
+        });
+        console.log(`Sandbox created: ${sandbox.sandboxId}`);
+        await createFreshNextJS(sandbox);
+      } else {
+        sandbox = await Sandbox.create({
+          source: {
+            type: "git",
+            url: `https://github.com/${targetOwner}/${targetRepo}.git`,
+            depth: 1,
+          },
+          resources: { vcpus: 2 },
+          timeout: ms("7m"),
+          ports: [3000, 7681],
+          runtime: "node24",
+        });
+        console.log(`Sandbox created: ${sandbox.sandboxId}`);
+      }
     }
 
     // 2. Install CLI for selected provider
@@ -114,7 +168,10 @@ export async function POST(request: Request) {
     // 6. Launch TTYD with CLI
     await launchTTYD(sandbox, ttydPath, provider, anthropicApiKey);
 
-    // 7. Wait for TTYD to be ready
+    // 7. Start dev server (npm run dev or pnpm dev)
+    await startDevServer(sandbox);
+
+    // 8. Wait for TTYD to be ready
     const ready = await waitForTTYD(sandbox);
     if (!ready) console.warn("TTYD timed out but returning URL anyway.");
 
@@ -129,6 +186,9 @@ export async function POST(request: Request) {
       sandboxId: sandbox.sandboxId,
       ttydUrl,
       status: "ready",
+      // Vercel timing for accurate frontend countdown
+      vercelCreatedAt: sandbox.createdAt.getTime(),
+      vercelTimeout: sandbox.timeout,
     });
   } catch (error) {
     console.error("Sandbox creation failed:", error);
@@ -162,11 +222,64 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "Missing sandboxId" }, { status: 400 });
     }
 
-    // Connect to existing sandbox and stop it
-    const sandbox = await Sandbox.get({ sandboxId });
-    await sandbox.stop();
+    // Check if OIDC token is available (required for Vercel SDK)
+    if (!process.env.VERCEL_OIDC_TOKEN) {
+      console.warn(`VERCEL_OIDC_TOKEN not set, cannot stop ${sandboxId} via SDK`);
+      // Return success anyway - sandbox will auto-expire
+      return NextResponse.json({
+        success: true,
+        sandboxId,
+        warning: "OIDC token not available - sandbox will auto-expire"
+      });
+    }
 
-    console.log(`Sandbox stopped: ${sandboxId}`);
+    try {
+      // Connect to existing sandbox and stop it
+      const sandbox = await Sandbox.get({ sandboxId });
+
+      // Check if already stopped
+      if (sandbox.status === "stopped" || sandbox.status === "stopping") {
+        console.log(`Sandbox ${sandboxId} already stopped/stopping`);
+        return NextResponse.json({ success: true, sandboxId, alreadyStopped: true });
+      }
+
+      await sandbox.stop();
+      console.log(`Sandbox stopped: ${sandboxId}`);
+    } catch (sandboxError) {
+      const errorMessage = sandboxError instanceof Error ? sandboxError.message : String(sandboxError);
+      console.error(`Sandbox.get/stop error for ${sandboxId}:`, errorMessage);
+
+      // Handle various error cases gracefully
+      const isNotFound =
+        errorMessage.includes("not found") ||
+        errorMessage.includes("does not exist") ||
+        errorMessage.includes("404");
+
+      const isAuthError =
+        errorMessage.includes("unauthorized") ||
+        errorMessage.includes("401") ||
+        errorMessage.includes("403") ||
+        errorMessage.includes("OIDC") ||
+        errorMessage.includes("token");
+
+      if (isNotFound) {
+        console.log(`Sandbox ${sandboxId} not found (may already be stopped)`);
+        return NextResponse.json({ success: true, sandboxId, notFound: true });
+      }
+
+      if (isAuthError) {
+        // Auth error - sandbox may still exist but we can't stop it
+        // Return success to let Convex clean up its state, sandbox will auto-expire
+        console.warn(`Auth error stopping ${sandboxId}, will auto-expire`);
+        return NextResponse.json({
+          success: true,
+          sandboxId,
+          warning: "Auth error - sandbox will auto-expire"
+        });
+      }
+
+      throw sandboxError;
+    }
 
     return NextResponse.json({ success: true, sandboxId });
   } catch (error) {
