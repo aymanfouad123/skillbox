@@ -1,6 +1,10 @@
 import { cronJobs } from "convex/server";
 import { internal } from "./_generated/api";
 
+// Type assertion for internal API (types regenerated on `npx convex dev`)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const internalApi = internal as any;
+
 const crons = cronJobs();
 
 // Clean up expired sandboxes every minute
@@ -33,6 +37,14 @@ crons.interval(
   "handle slow claude users",
   { seconds: 10 },
   internal.queue.handleSlowClaudeUsers
+);
+
+// Check for expiring snapshots daily
+// Renews snapshots that are within 2 days of expiration (7-day limit)
+crons.interval(
+  "check snapshot expiration",
+  { hours: 24 },
+  internalApi.snapshots.checkAndRenewSnapshots
 );
 
 export default crons;
