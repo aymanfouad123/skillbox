@@ -69,6 +69,7 @@ export function SandboxPage({
   const claimQueueSlotMutation = useMutation(api.sandboxes.claimQueueSlot);
   const sendHeartbeatMutation = useMutation(api.sandboxes.sendHeartbeat);
   const removeFromQueueMutation = useMutation(api.sandboxes.removeFromQueue);
+  const extendTimeoutMutation = useMutation(api.sandboxes.extendTimeout);
 
   // Derive state from Convex query
   const sandboxState = useMemo(() => {
@@ -80,6 +81,7 @@ export function SandboxPage({
         sandboxId: userStatus.sandboxId,
         ttydUrl: userStatus.ttydUrl,
         expiresAt: userStatus.expiresAt,
+        hasExtendedTimeout: userStatus.hasExtendedTimeout ?? false,
       };
     }
 
@@ -253,13 +255,15 @@ export function SandboxPage({
 
         const data = await response.json();
 
-        // Register the sandbox
+        // Register the sandbox with Vercel timing
         const registerResult = await registerSandboxMutation({
           userId,
           sandboxId: data.sandboxId,
           ttydUrl: data.ttydUrl,
           skill: claimResult.skill!,
           cliProvider: "claude",
+          vercelCreatedAt: data.vercelCreatedAt,
+          vercelTimeout: data.vercelTimeout,
         });
 
         if (!registerResult.success) {
@@ -296,6 +300,8 @@ export function SandboxPage({
     registerSandboxMutation,
   ]);
 
+  const [isExtending, setIsExtending] = useState(false);
+
   const handleKillSandbox = useCallback(async () => {
     if (isKilling) return;
 
@@ -313,6 +319,27 @@ export function SandboxPage({
       setIsKilling(false);
     }
   }, [isKilling, stopSandboxMutation, userId]);
+
+  const handleExtendTimeout = useCallback(async () => {
+    if (isExtending) return;
+
+    setIsExtending(true);
+    try {
+      const result = await extendTimeoutMutation({ userId });
+      if (result.success && result.newExpiresAt) {
+        // Update timer with new expiration
+        const remaining = Math.max(
+          0,
+          Math.floor((result.newExpiresAt - Date.now()) / 1000)
+        );
+        setTimeRemaining(remaining);
+      }
+    } catch (error) {
+      console.error("Failed to extend timeout:", error);
+    } finally {
+      setIsExtending(false);
+    }
+  }, [isExtending, extendTimeoutMutation, userId]);
 
   const handleCancelQueue = useCallback(async () => {
     try {
@@ -459,13 +486,16 @@ export function SandboxPage({
 
       const data = await response.json();
 
-      // Step 2: Register in Convex with complete data
+      // Step 2: Register in Convex with complete data including Vercel timing
       const registerResult = await registerSandboxMutation({
         userId,
         sandboxId: data.sandboxId,
         ttydUrl: data.ttydUrl,
         skill,
         cliProvider,
+        // Pass Vercel timing for accurate countdown
+        vercelCreatedAt: data.vercelCreatedAt,
+        vercelTimeout: data.vercelTimeout,
       });
 
       if (!registerResult.success) {
@@ -979,6 +1009,20 @@ export function SandboxPage({
                 >
                   {formatTime(timeRemaining)}
                 </span>
+                {/* Extend button - only shown if not already extended and time is low */}
+                {!sandboxState.hasExtendedTimeout && timeRemaining <= 120 && (
+                  <button
+                    onClick={handleExtendTimeout}
+                    disabled={isExtending}
+                    className={`text-xs px-3 py-1 border ${
+                      isExtending
+                        ? "border-gray-600 text-gray-600 cursor-not-allowed"
+                        : "border-green-500/50 text-green-500 hover:bg-green-500 hover:text-black"
+                    }`}
+                  >
+                    {isExtending ? "Extending..." : "+2 min"}
+                  </button>
+                )}
                 <button
                   onClick={handleKillSandbox}
                   disabled={isKilling}

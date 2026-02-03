@@ -13,6 +13,7 @@ import type * as constants from "../constants.js";
 import type * as crons from "../crons.js";
 import type * as queue from "../queue.js";
 import type * as sandboxes from "../sandboxes.js";
+import type * as snapshots from "../snapshots.js";
 
 import type {
   ApiFromModules,
@@ -26,6 +27,7 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   queue: typeof queue;
   sandboxes: typeof sandboxes;
+  snapshots: typeof snapshots;
 }>;
 
 /**

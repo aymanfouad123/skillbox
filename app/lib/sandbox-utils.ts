@@ -190,6 +190,28 @@ export async function launchTTYD(
 }
 
 /**
+ * Start the dev server (npm run dev or pnpm dev) in detached mode.
+ * Uses pnpm if pnpm-lock.yaml exists in /vercel/sandbox, else npm.
+ */
+export async function startDevServer(sandbox: Sandbox): Promise<void> {
+  console.log("Starting dev server...");
+  const checkPnpm = await sandbox.runCommand({
+    cmd: "test",
+    args: ["-f", "/vercel/sandbox/pnpm-lock.yaml"],
+    cwd: "/vercel/sandbox",
+  });
+  const usePnpm = checkPnpm.exitCode === 0;
+  const devCmd = usePnpm ? "pnpm run dev" : "npm run dev";
+  await sandbox.runCommand({
+    cmd: "bash",
+    args: ["-c", `cd /vercel/sandbox && ${devCmd}`],
+    cwd: "/vercel/sandbox",
+    detached: true,
+  });
+  console.log(`Dev server started (${usePnpm ? "pnpm" : "npm"} run dev)`);
+}
+
+/**
  * Wait for TTYD to be ready
  */
 export async function waitForTTYD(sandbox: Sandbox): Promise<boolean> {
