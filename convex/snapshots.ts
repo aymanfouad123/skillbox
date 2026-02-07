@@ -9,6 +9,7 @@ import { internal } from "./_generated/api";
 import {
   SNAPSHOT_EXPIRATION_MS,
   SNAPSHOT_RENEWAL_THRESHOLD_MS,
+  SNAPSHOT_RENEWAL_RETRY_MS,
 } from "./constants";
 
 // Type assertion for internal API (types regenerated on `npx convex dev`)
@@ -201,6 +202,26 @@ export const markSnapshotRenewing = internalMutation({
 });
 
 /**
+ * Revert snapshot from renewing back to active (on renewal failure)
+ */
+export const revertSnapshotRenewingToActive = internalMutation({
+  args: { playgroundId: v.string() },
+  handler: async (ctx, args) => {
+    const snapshot = await ctx.db
+      .query("snapshots")
+      .withIndex("by_playgroundId", (q) =>
+        q.eq("playgroundId", args.playgroundId)
+      )
+      .filter((q) => q.eq(q.field("status"), "renewing"))
+      .first();
+
+    if (snapshot) {
+      await ctx.db.patch(snapshot._id, { status: "active" });
+    }
+  },
+});
+
+/**
  * Update snapshot after renewal
  */
 export const updateSnapshotAfterRenewal = internalMutation({
@@ -282,6 +303,7 @@ export const checkAndRenewSnapshots = internalMutation({
 /**
  * Renew a snapshot by creating a new one
  * This recreates the environment from scratch
+ * On failure: revert to active and schedule retry
  */
 export const renewSnapshot = internalAction({
   args: {
@@ -310,20 +332,40 @@ export const renewSnapshot = internalAction({
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        console.error(`Failed to renew snapshot for ${args.playgroundId}:`, error);
+        console.error(
+          `Failed to renew snapshot for ${args.playgroundId}:`,
+          error
+        );
+        await ctx.runMutation(internalApi.snapshots.revertSnapshotRenewingToActive, {
+          playgroundId: args.playgroundId,
+        });
+        await ctx.scheduler.runAfter(
+          SNAPSHOT_RENEWAL_RETRY_MS,
+          internalApi.snapshots.renewSnapshot,
+          args
+        );
         return;
       }
 
       const data = await response.json();
-      console.log(`Snapshot renewed for ${args.playgroundId}: ${data.snapshotId}`);
+      console.log(
+        `Snapshot renewed for ${args.playgroundId}: ${data.snapshotId}`
+      );
 
-      // Update Convex with new snapshot ID
       await ctx.runMutation(internalApi.snapshots.updateSnapshotAfterRenewal, {
         playgroundId: args.playgroundId,
         newSnapshotId: data.snapshotId,
       });
     } catch (error) {
       console.error(`Error renewing snapshot for ${args.playgroundId}:`, error);
+      await ctx.runMutation(internalApi.snapshots.revertSnapshotRenewingToActive, {
+        playgroundId: args.playgroundId,
+      });
+      await ctx.scheduler.runAfter(
+        SNAPSHOT_RENEWAL_RETRY_MS,
+        internalApi.snapshots.renewSnapshot,
+        args
+      );
     }
   },
 });

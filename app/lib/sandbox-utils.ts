@@ -1,5 +1,6 @@
 import { Sandbox } from "@vercel/sandbox";
-import { CLIProvider } from "../data/skills";
+import ms from "ms";
+import { CLIProvider, PLAYGROUNDS } from "../data/skills";
 
 // =============================================================================
 // CLI Provider Configuration
@@ -212,6 +213,29 @@ export async function startDevServer(sandbox: Sandbox): Promise<void> {
 }
 
 /**
+ * Wait for dev server on port 3000 to be ready
+ */
+export async function waitForDevServer(sandbox: Sandbox): Promise<boolean> {
+  let ready = false;
+  for (let i = 0; i < 60; i++) {
+    try {
+      const check = await sandbox.runCommand({
+        cmd: "curl",
+        args: ["-s", "http://localhost:3000"],
+      });
+      if (check.exitCode === 0) {
+        ready = true;
+        break;
+      }
+    } catch {
+      // Port not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return ready;
+}
+
+/**
  * Wait for TTYD to be ready
  */
 export async function waitForTTYD(sandbox: Sandbox): Promise<boolean> {
@@ -294,4 +318,92 @@ export async function createFreshNextJS(sandbox: Sandbox): Promise<void> {
   console.log(`Directory contents: ${verifyStdout}`);
 
   console.log("Fresh Next.js project ready");
+}
+
+// =============================================================================
+// Shared Sandbox Creation
+// =============================================================================
+
+export interface CreateSandboxParams {
+  targetOwner: string;
+  targetRepo: string;
+  snapshotId: string | null;
+  logPrefix?: string;
+}
+
+/**
+ * Create sandbox from snapshot (with fallback) or git/create-next-app.
+ * Shared by public and internal sandbox routes.
+ */
+export async function createSandboxWithSnapshotOrGit(
+  params: CreateSandboxParams
+): Promise<Sandbox> {
+  const { targetOwner, targetRepo, snapshotId, logPrefix = "" } = params;
+  let sandbox: Sandbox | null = null;
+
+  if (snapshotId) {
+    try {
+      sandbox = await Sandbox.create({
+        source: { type: "snapshot", snapshotId },
+        resources: { vcpus: 2 },
+        timeout: ms("7m"),
+        ports: [3000, 7681],
+        runtime: "node24",
+      });
+      console.log(`${logPrefix}Sandbox created from snapshot: ${sandbox.sandboxId}`);
+    } catch (snapshotErr) {
+      console.warn(
+        `${logPrefix}Snapshot boot failed (${snapshotId}), falling back to git/create-next-app:`,
+        snapshotErr instanceof Error ? snapshotErr.message : snapshotErr
+      );
+    }
+  }
+
+  if (!sandbox) {
+    const isCreateNew =
+      targetOwner === "_create" ||
+      targetOwner === "fresh" ||
+      (targetOwner === "create" && targetRepo === "nextjs");
+
+    if (isCreateNew && targetRepo === "nextjs") {
+      sandbox = await Sandbox.create({
+        resources: { vcpus: 2 },
+        timeout: ms("7m"),
+        ports: [3000, 7681],
+        runtime: "node24",
+      });
+      console.log(`${logPrefix}Sandbox created: ${sandbox.sandboxId}`);
+      await createFreshNextJS(sandbox);
+    } else {
+      sandbox = await Sandbox.create({
+        source: {
+          type: "git",
+          url: `https://github.com/${targetOwner}/${targetRepo}.git`,
+          depth: 1,
+        },
+        resources: { vcpus: 2 },
+        timeout: ms("7m"),
+        ports: [3000, 7681],
+        runtime: "node24",
+      });
+      console.log(`${logPrefix}Sandbox created: ${sandbox.sandboxId}`);
+    }
+  }
+
+  return sandbox;
+}
+
+/**
+ * Resolve effective owner/repo and playground for sandbox creation.
+ */
+export function resolvePlayground(targetOwner: string, targetRepo: string) {
+  const effectiveOwner =
+    targetOwner === "_create" || targetOwner === "fresh"
+      ? "create"
+      : targetOwner;
+  const effectiveRepo = targetRepo;
+  const playground = PLAYGROUNDS.find(
+    (p) => p.owner === effectiveOwner && p.repo === effectiveRepo
+  );
+  return { effectiveOwner, effectiveRepo, playground };
 }

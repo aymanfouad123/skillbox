@@ -29,3 +29,6 @@ export const SNAPSHOT_EXPIRATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Renew snapshots 2 days before expiration
 export const SNAPSHOT_RENEWAL_THRESHOLD_MS = 2 * 24 * 60 * 60 * 1000;
+
+// Retry failed snapshot renewal after 1 hour
+export const SNAPSHOT_RENEWAL_RETRY_MS = 60 * 60 * 1000;
