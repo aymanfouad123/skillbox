@@ -2,7 +2,9 @@ import { v } from "convex/values";
 import {
   mutation,
   query,
+  action,
   internalMutation,
+  internalQuery,
   internalAction,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -411,37 +413,57 @@ export const stopSandbox = mutation({
 
 /**
  * Extend sandbox timeout (one-time only)
- * Extends both Convex expiration and Vercel sandbox timeout
+ * Calls Vercel PATCH first; only updates Convex if Vercel extend succeeds
  */
-export const extendTimeout = mutation({
+export const extendTimeout = action({
   args: { userId: v.string() },
-  handler: async (ctx, args) => {
-    const sandbox = await ctx.db
-      .query("sandboxes")
-      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
-      .filter((q) => q.eq(q.field("status"), "active"))
-      .first();
+  handler: async (
+    ctx,
+    args
+  ): Promise<
+    | { success: true; newExpiresAt: number }
+    | { success: false; error: string }
+  > => {
+    const sandbox = await ctx.runQuery(internal.sandboxes.getSandboxForExtend, {
+      userId: args.userId,
+    });
 
     if (!sandbox) {
       return { success: false, error: "not_found" };
     }
 
-    // Check if already extended
     if (sandbox.hasExtendedTimeout) {
       return { success: false, error: "already_extended" };
     }
 
-    // Update Convex expiration
-    const newExpiresAt = sandbox.expiresAt + EXTEND_TIMEOUT_MS;
-    await ctx.db.patch(sandbox._id, {
-      expiresAt: newExpiresAt,
-      hasExtendedTimeout: true,
+    // Call Vercel PATCH first - only update Convex if it succeeds
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const response = await fetch(`${baseUrl}/api/sandbox/internal`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": process.env.CONVEX_INTERNAL_SECRET || "",
+      },
+      body: JSON.stringify({
+        sandboxId: sandbox.sandboxId,
+        action: "extend",
+        duration: EXTEND_TIMEOUT_MS,
+      }),
     });
 
-    // Schedule Vercel sandbox extension
-    await ctx.scheduler.runAfter(0, internal.sandboxes.extendVercelSandbox, {
-      sandboxId: sandbox.sandboxId,
-      duration: EXTEND_TIMEOUT_MS,
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      console.error("Vercel extend failed:", err);
+      return {
+        success: false,
+        error: (err as { error?: string }).error || "vercel_extend_failed",
+      };
+    }
+
+    const newExpiresAt = sandbox.expiresAt + EXTEND_TIMEOUT_MS;
+    await ctx.runMutation(internal.sandboxes.updateSandboxAfterExtend, {
+      sandboxId: sandbox._id,
+      newExpiresAt,
     });
 
     return { success: true, newExpiresAt };
@@ -449,8 +471,42 @@ export const extendTimeout = mutation({
 });
 
 // =============================================================================
+// Internal Queries
+// =============================================================================
+
+/**
+ * Get active sandbox for extend flow (used by extendTimeout action)
+ */
+export const getSandboxForExtend = internalQuery({
+  args: { userId: v.string() },
+  handler: async (ctx, args) => {
+    return ctx.db
+      .query("sandboxes")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .filter((q) => q.eq(q.field("status"), "active"))
+      .first();
+  },
+});
+
+// =============================================================================
 // Internal Mutations (called by crons and actions)
 // =============================================================================
+
+/**
+ * Update sandbox after successful Vercel extend
+ */
+export const updateSandboxAfterExtend = internalMutation({
+  args: {
+    sandboxId: v.id("sandboxes"),
+    newExpiresAt: v.number(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.sandboxId, {
+      expiresAt: args.newExpiresAt,
+      hasExtendedTimeout: true,
+    });
+  },
+});
 
 /**
  * Register sandbox from queue processing (internal)
@@ -588,34 +644,3 @@ export const stopVercelSandbox = internalAction({
   },
 });
 
-/**
- * Extend the Vercel sandbox timeout via API
- */
-export const extendVercelSandbox = internalAction({
-  args: { sandboxId: v.string(), duration: v.number() },
-  handler: async (_ctx, args) => {
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-
-    try {
-      const response = await fetch(`${baseUrl}/api/sandbox/internal`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Internal-Secret": process.env.CONVEX_INTERNAL_SECRET || "",
-        },
-        body: JSON.stringify({
-          sandboxId: args.sandboxId,
-          action: "extend",
-          duration: args.duration,
-        }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        console.error("Failed to extend sandbox:", error);
-      }
-    } catch (error) {
-      console.error("Failed to extend Vercel sandbox:", error);
-    }
-  },
-});

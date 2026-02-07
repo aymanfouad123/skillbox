@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Github } from "lucide-react";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { PLAYGROUNDS, Playground, CLIProvider } from "../data/skills";
 
@@ -69,7 +69,7 @@ export function SandboxPage({
   const claimQueueSlotMutation = useMutation(api.sandboxes.claimQueueSlot);
   const sendHeartbeatMutation = useMutation(api.sandboxes.sendHeartbeat);
   const removeFromQueueMutation = useMutation(api.sandboxes.removeFromQueue);
-  const extendTimeoutMutation = useMutation(api.sandboxes.extendTimeout);
+  const extendTimeoutAction = useAction(api.sandboxes.extendTimeout);
 
   // Derive state from Convex query
   const sandboxState = useMemo(() => {
@@ -325,7 +325,7 @@ export function SandboxPage({
 
     setIsExtending(true);
     try {
-      const result = await extendTimeoutMutation({ userId });
+      const result = await extendTimeoutAction({ userId });
       if (result.success && result.newExpiresAt) {
         // Update timer with new expiration
         const remaining = Math.max(
@@ -339,7 +339,7 @@ export function SandboxPage({
     } finally {
       setIsExtending(false);
     }
-  }, [isExtending, extendTimeoutMutation, userId]);
+  }, [isExtending, extendTimeoutAction, userId]);
 
   const handleCancelQueue = useCallback(async () => {
     try {
