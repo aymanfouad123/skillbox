@@ -1,9 +1,8 @@
 import { Sandbox } from "@vercel/sandbox";
 import { NextResponse } from "next/server";
-import ms from "ms";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../convex/_generated/api";
-import { CreateSandboxRequest, PLAYGROUNDS } from "../../data/skills";
+import { CreateSandboxRequest } from "../../data/skills";
 import {
   CLI_PROVIDERS,
   installCLI,
@@ -11,12 +10,21 @@ import {
   injectSkill,
   launchTTYD,
   waitForTTYD,
-  createFreshNextJS,
+  waitForDevServer,
   startDevServer,
+  createSandboxWithSnapshotOrGit,
+  resolvePlayground,
 } from "../../lib/sandbox-utils";
 
-// Initialize Convex client for snapshot queries
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+// Lazy Convex client - only init when URL is set to avoid crash on missing env
+let convexClient: ConvexHttpClient | null = null;
+function getConvexClient(): ConvexHttpClient | null {
+  if (convexClient !== null) return convexClient;
+  const url = process.env.NEXT_PUBLIC_CONVEX_URL;
+  if (!url) return null;
+  convexClient = new ConvexHttpClient(url);
+  return convexClient;
+}
 
 // =============================================================================
 // POST Handler - Create Sandbox
@@ -61,40 +69,12 @@ export async function POST(request: Request) {
 
     const provider = CLI_PROVIDERS[cliProvider];
 
-    // 1. Resolve selected playground (map queue sentinel to create/nextjs)
-    const effectiveOwner =
-      targetOwner === "_create" || targetOwner === "fresh"
-        ? "create"
-        : targetOwner;
-    const effectiveRepo = targetRepo;
-    const playground = PLAYGROUNDS.find(
-      (p) => p.owner === effectiveOwner && p.repo === effectiveRepo
-    );
-
-    const useSnapshot = Boolean(playground?.snapshotId);
-    if (useSnapshot) {
-      console.log(
-        `Creating sandbox from snapshot (${
-          playground!.id
-        }), skill ${skillName}, using ${provider.name}...`
-      );
-    } else {
-      const isCreateNew =
-        targetOwner === "_create" ||
-        targetOwner === "fresh" ||
-        (targetOwner === "create" && targetRepo === "nextjs");
-      console.log(
-        isCreateNew
-          ? `Creating sandbox with fresh ${targetRepo} project, skill ${skillName}, using ${provider.name}...`
-          : `Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}, using ${provider.name}...`
-      );
-    }
-
-    // Try to get snapshot from Convex first (dynamic), fall back to hardcoded
-    let snapshotId = playground?.snapshotId;
-    if (playground && process.env.NEXT_PUBLIC_CONVEX_URL) {
+    // 1. Resolve playground and snapshot
+    const { playground } = resolvePlayground(targetOwner, targetRepo);
+    let snapshotId = playground?.snapshotId ?? null;
+    const convex = getConvexClient();
+    if (playground && convex) {
       try {
-        // Dynamic import to handle case where Convex types aren't generated yet
         const convexSnapshot = await convex.query(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (api as any).snapshots?.getSnapshot,
@@ -109,69 +89,41 @@ export async function POST(request: Request) {
       }
     }
 
-    // 2. Create Sandbox: snapshot boot (fast) or git/create-next-app (slower)
-    if (snapshotId) {
-      sandbox = await Sandbox.create({
-        source: {
-          type: "snapshot",
-          snapshotId,
-        },
-        resources: { vcpus: 2 },
-        timeout: ms("7m"),
-        ports: [3000, 7681],
-        runtime: "node24",
-      });
-      console.log(`Sandbox created from snapshot: ${sandbox.sandboxId}`);
-    } else {
-      const isCreateNew =
-        targetOwner === "_create" ||
-        targetOwner === "fresh" ||
-        (targetOwner === "create" && targetRepo === "nextjs");
-      if (isCreateNew && targetRepo === "nextjs") {
-        sandbox = await Sandbox.create({
-          resources: { vcpus: 2 },
-          timeout: ms("7m"),
-          ports: [3000, 7681],
-          runtime: "node24",
-        });
-        console.log(`Sandbox created: ${sandbox.sandboxId}`);
-        await createFreshNextJS(sandbox);
-      } else {
-        sandbox = await Sandbox.create({
-          source: {
-            type: "git",
-            url: `https://github.com/${targetOwner}/${targetRepo}.git`,
-            depth: 1,
-          },
-          resources: { vcpus: 2 },
-          timeout: ms("7m"),
-          ports: [3000, 7681],
-          runtime: "node24",
-        });
-        console.log(`Sandbox created: ${sandbox.sandboxId}`);
-      }
-    }
+    console.log(
+      snapshotId
+        ? `Creating sandbox from snapshot (${playground?.id}), skill ${skillName}, using ${provider.name}...`
+        : `Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}, using ${provider.name}...`
+    );
 
-    // 2. Install CLI for selected provider
+    // 2. Create Sandbox (shared helper with snapshot fallback)
+    sandbox = await createSandboxWithSnapshotOrGit({
+      targetOwner,
+      targetRepo,
+      snapshotId,
+    });
+
+    // 3. Install CLI
     await installCLI(sandbox, provider);
 
-    // 3. Install TTYD
+    // 4. Install TTYD
     const ttydPath = await installTTYD(sandbox);
 
-    // 4. Inject the Skill
+    // 5. Inject the Skill
     await injectSkill(sandbox, skillOwner, skillRepo, skillName);
 
-    // 5. Configure CLI
+    // 6. Configure CLI
     console.log(`Setting up ${provider.name} CLI configuration...`);
     await provider.configSetup(sandbox);
 
-    // 6. Launch TTYD with CLI
+    // 7. Launch TTYD with CLI
     await launchTTYD(sandbox, ttydPath, provider, anthropicApiKey);
 
-    // 7. Start dev server (npm run dev or pnpm dev)
+    // 8. Start dev server and wait for readiness
     await startDevServer(sandbox);
+    const devReady = await waitForDevServer(sandbox);
+    if (!devReady) console.warn("Dev server timed out but continuing anyway.");
 
-    // 8. Wait for TTYD to be ready
+    // 9. Wait for TTYD to be ready
     const ready = await waitForTTYD(sandbox);
     if (!ready) console.warn("TTYD timed out but returning URL anyway.");
 
