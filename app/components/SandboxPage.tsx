@@ -80,6 +80,7 @@ export function SandboxPage({
         status: "ready" as const,
         sandboxId: userStatus.sandboxId,
         ttydUrl: userStatus.ttydUrl,
+        previewUrl: userStatus.previewUrl,
         expiresAt: userStatus.expiresAt,
         hasExtendedTimeout: userStatus.hasExtendedTimeout ?? false,
       };
@@ -260,6 +261,7 @@ export function SandboxPage({
           userId,
           sandboxId: data.sandboxId,
           ttydUrl: data.ttydUrl,
+          previewUrl: data.previewUrl,
           skill: claimResult.skill!,
           cliProvider: "claude",
           vercelCreatedAt: data.vercelCreatedAt,
@@ -491,6 +493,7 @@ export function SandboxPage({
         userId,
         sandboxId: data.sandboxId,
         ttydUrl: data.ttydUrl,
+        previewUrl: data.previewUrl,
         skill,
         cliProvider,
         // Pass Vercel timing for accurate countdown
@@ -1009,6 +1012,17 @@ export function SandboxPage({
                 >
                   {formatTime(timeRemaining)}
                 </span>
+                {/* Preview button - only shown if dev server is ready */}
+                {"previewUrl" in sandboxState && sandboxState.previewUrl && (
+                  <a
+                    href={sandboxState.previewUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs px-3 py-1 border border-blue-500/50 text-blue-500 hover:bg-blue-500 hover:text-black"
+                  >
+                    Preview
+                  </a>
+                )}
                 {/* Extend button - only shown if not already extended and time is low */}
                 {!sandboxState.hasExtendedTimeout && timeRemaining <= 120 && (
                   <button

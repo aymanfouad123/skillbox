@@ -8,6 +8,7 @@ export default defineSchema({
     userId: v.string(),
     sandboxId: v.string(), // Real Vercel sandbox ID (required)
     ttydUrl: v.string(), // Real terminal URL (required)
+    previewUrl: v.optional(v.string()), // Public dev-server URL (only set if ready)
     skill: v.string(), // "owner/repo/skillName"
     cliProvider: v.union(v.literal("opencode"), v.literal("claude")),
     status: v.union(
