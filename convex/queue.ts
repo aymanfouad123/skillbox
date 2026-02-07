@@ -290,6 +290,7 @@ export const createSandboxFromQueue = internalAction({
         userId: args.userId,
         sandboxId: data.sandboxId,
         ttydUrl: data.ttydUrl,
+        previewUrl: data.previewUrl,
         skill: args.skill,
         cliProvider: args.cliProvider,
       });

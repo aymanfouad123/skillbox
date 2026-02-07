@@ -8,6 +8,7 @@ export default defineSchema({
     userId: v.string(),
     sandboxId: v.string(), // Real Vercel sandbox ID (required)
     ttydUrl: v.string(), // Real terminal URL (required)
+    previewUrl: v.optional(v.string()), // Public dev-server URL (only set if ready)
     skill: v.string(), // "owner/repo/skillName"
     cliProvider: v.union(v.literal("opencode"), v.literal("claude")),
     status: v.union(
@@ -17,6 +18,11 @@ export default defineSchema({
     createdAt: v.number(),
     expiresAt: v.number(),
     archivedAt: v.optional(v.number()),
+    // Track Vercel sandbox timing for accurate countdown
+    vercelCreatedAt: v.optional(v.number()), // When Vercel sandbox was created
+    vercelTimeout: v.optional(v.number()), // Initial timeout in ms from Vercel
+    // Extension tracking (one-time only)
+    hasExtendedTimeout: v.optional(v.boolean()),
   })
     .index("by_status", ["status"])
     .index("by_userId", ["userId"])
@@ -52,4 +58,24 @@ export default defineSchema({
     claudeCount: v.number(), // Claude CLI usage
     updatedAt: v.number(),
   }),
+
+  // Playground snapshots for fast sandbox boot
+  // Snapshots expire after 7 days per Vercel SDK
+  snapshots: defineTable({
+    playgroundId: v.string(), // "commerce", "chat", "new-nextjs"
+    snapshotId: v.string(), // Vercel snapshot ID (snap_xxx)
+    createdAt: v.number(),
+    expiresAt: v.number(), // 7 days from creation
+    status: v.union(
+      v.literal("active"), // Currently in use
+      v.literal("expired"), // Past expiration
+      v.literal("renewing") // Being renewed
+    ),
+    // Metadata for recreation
+    sourceOwner: v.string(), // GitHub owner or "create" for fresh
+    sourceRepo: v.string(), // GitHub repo or "nextjs" for fresh
+  })
+    .index("by_playgroundId", ["playgroundId"])
+    .index("by_status", ["status"])
+    .index("by_expiresAt", ["expiresAt"]),
 });

@@ -20,3 +20,15 @@ export const PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
 
 // Sandbox session duration in milliseconds (6 minutes)
 export const SESSION_DURATION_MS = 6 * 60 * 1000;
+
+// Extension amount when user clicks "Extend" (2 minutes)
+export const EXTEND_TIMEOUT_MS = 2 * 60 * 1000;
+
+// Snapshot expiration (7 days per Vercel SDK)
+export const SNAPSHOT_EXPIRATION_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Renew snapshots 2 days before expiration
+export const SNAPSHOT_RENEWAL_THRESHOLD_MS = 2 * 24 * 60 * 60 * 1000;
+
+// Retry failed snapshot renewal after 1 hour
+export const SNAPSHOT_RENEWAL_RETRY_MS = 60 * 60 * 1000;

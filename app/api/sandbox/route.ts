@@ -1,6 +1,7 @@
 import { Sandbox } from "@vercel/sandbox";
 import { NextResponse } from "next/server";
-import ms from "ms";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../../../convex/_generated/api";
 import { CreateSandboxRequest } from "../../data/skills";
 import {
   CLI_PROVIDERS,
@@ -9,8 +10,21 @@ import {
   injectSkill,
   launchTTYD,
   waitForTTYD,
-  createFreshNextJS,
+  waitForDevServer,
+  startDevServer,
+  createSandboxWithSnapshotOrGit,
+  resolvePlayground,
 } from "../../lib/sandbox-utils";
+
+// Lazy Convex client - only init when URL is set to avoid crash on missing env
+let convexClient: ConvexHttpClient | null = null;
+function getConvexClient(): ConvexHttpClient | null {
+  if (convexClient !== null) return convexClient;
+  const url = process.env.NEXT_PUBLIC_CONVEX_URL;
+  if (!url) return null;
+  convexClient = new ConvexHttpClient(url);
+  return convexClient;
+}
 
 // =============================================================================
 // POST Handler - Create Sandbox
@@ -54,67 +68,62 @@ export async function POST(request: Request) {
     }
 
     const provider = CLI_PROVIDERS[cliProvider];
-    // _create = sentinel from queue/claim flow; create/nextjs = "New Next.js" playground
-    const isCreateNew =
-      targetOwner === "_create" ||
-      (targetOwner === "create" && targetRepo === "nextjs");
+
+    // 1. Resolve playground and snapshot
+    const { playground } = resolvePlayground(targetOwner, targetRepo);
+    let snapshotId = playground?.snapshotId ?? null;
+    const convex = getConvexClient();
+    if (playground && convex) {
+      try {
+        const convexSnapshot = await convex.query(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (api as any).snapshots?.getSnapshot,
+          { playgroundId: playground.id }
+        );
+        if (convexSnapshot?.snapshotId) {
+          snapshotId = convexSnapshot.snapshotId;
+          console.log(`Using Convex snapshot: ${snapshotId}`);
+        }
+      } catch (err) {
+        console.log("Convex snapshot query failed, using fallback:", err);
+      }
+    }
 
     console.log(
-      isCreateNew
-        ? `Creating sandbox with fresh ${targetRepo} project, skill ${skillName}, using ${provider.name}...`
+      snapshotId
+        ? `Creating sandbox from snapshot (${playground?.id}), skill ${skillName}, using ${provider.name}...`
         : `Creating sandbox for ${targetOwner}/${targetRepo} with skill ${skillName}, using ${provider.name}...`
     );
 
-    // 1. Create Sandbox with Vercel Sandbox SDK
-    // Note: Backend timeout includes setup time (~60-90s for Next.js creation).
-    // Frontend shows 6 minutes, but we give 7 minutes on backend to account for
-    // setup overhead, ensuring users get the full 6 minutes of actual usage.
-    if (isCreateNew && targetRepo === "nextjs") {
-      // For fresh Next.js, create empty sandbox and run create-next-app
-      // Extra time needed for create-next-app (~90s setup)
-      sandbox = await Sandbox.create({
-        resources: { vcpus: 2 },
-        timeout: ms("7m"),
-        ports: [7681],
-        runtime: "node22",
-      });
+    // 2. Create Sandbox (shared helper with snapshot fallback)
+    sandbox = await createSandboxWithSnapshotOrGit({
+      targetOwner,
+      targetRepo,
+      snapshotId,
+    });
 
-      console.log(`Sandbox created: ${sandbox.sandboxId}`);
-      await createFreshNextJS(sandbox);
-    } else {
-      // Clone existing repo for other playgrounds (~60s setup)
-      sandbox = await Sandbox.create({
-        source: {
-          type: "git",
-          url: `https://github.com/${targetOwner}/${targetRepo}.git`,
-          depth: 1,
-        },
-        resources: { vcpus: 2 },
-        timeout: ms("7m"), // Aligned with Next.js creation for consistency
-        ports: [7681],
-        runtime: "node22",
-      });
-
-      console.log(`Sandbox created: ${sandbox.sandboxId}`);
-    }
-
-    // 2. Install CLI for selected provider
+    // 3. Install CLI
     await installCLI(sandbox, provider);
 
-    // 3. Install TTYD
+    // 4. Install TTYD
     const ttydPath = await installTTYD(sandbox);
 
-    // 4. Inject the Skill
+    // 5. Inject the Skill
     await injectSkill(sandbox, skillOwner, skillRepo, skillName);
 
-    // 5. Configure CLI
+    // 6. Configure CLI
     console.log(`Setting up ${provider.name} CLI configuration...`);
     await provider.configSetup(sandbox);
 
-    // 6. Launch TTYD with CLI
+    // 7. Launch TTYD with CLI
     await launchTTYD(sandbox, ttydPath, provider, anthropicApiKey);
 
-    // 7. Wait for TTYD to be ready
+    // 8. Start dev server and wait for readiness
+    await startDevServer(sandbox);
+    const devReady = await waitForDevServer(sandbox);
+    if (!devReady) console.warn("Dev server timed out but continuing anyway.");
+
+    // 9. Wait for TTYD to be ready
     const ready = await waitForTTYD(sandbox);
     if (!ready) console.warn("TTYD timed out but returning URL anyway.");
 
@@ -122,13 +131,19 @@ export async function POST(request: Request) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
 
     const ttydUrl = sandbox.domain(7681);
-    console.log(`Sandbox ready: ${ttydUrl}`);
+    // Only expose preview URL if dev server is ready
+    const previewUrl = devReady ? sandbox.domain(3000) : undefined;
+    console.log(`Sandbox ready: ${ttydUrl}${previewUrl ? `, preview: ${previewUrl}` : ""}`);
 
     success = true;
     return NextResponse.json({
       sandboxId: sandbox.sandboxId,
       ttydUrl,
+      previewUrl,
       status: "ready",
+      // Vercel timing for accurate frontend countdown
+      vercelCreatedAt: sandbox.createdAt.getTime(),
+      vercelTimeout: sandbox.timeout,
     });
   } catch (error) {
     console.error("Sandbox creation failed:", error);
@@ -162,11 +177,64 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "Missing sandboxId" }, { status: 400 });
     }
 
-    // Connect to existing sandbox and stop it
-    const sandbox = await Sandbox.get({ sandboxId });
-    await sandbox.stop();
+    // Check if OIDC token is available (required for Vercel SDK)
+    if (!process.env.VERCEL_OIDC_TOKEN) {
+      console.warn(`VERCEL_OIDC_TOKEN not set, cannot stop ${sandboxId} via SDK`);
+      // Return success anyway - sandbox will auto-expire
+      return NextResponse.json({
+        success: true,
+        sandboxId,
+        warning: "OIDC token not available - sandbox will auto-expire"
+      });
+    }
 
-    console.log(`Sandbox stopped: ${sandboxId}`);
+    try {
+      // Connect to existing sandbox and stop it
+      const sandbox = await Sandbox.get({ sandboxId });
+
+      // Check if already stopped
+      if (sandbox.status === "stopped" || sandbox.status === "stopping") {
+        console.log(`Sandbox ${sandboxId} already stopped/stopping`);
+        return NextResponse.json({ success: true, sandboxId, alreadyStopped: true });
+      }
+
+      await sandbox.stop();
+      console.log(`Sandbox stopped: ${sandboxId}`);
+    } catch (sandboxError) {
+      const errorMessage = sandboxError instanceof Error ? sandboxError.message : String(sandboxError);
+      console.error(`Sandbox.get/stop error for ${sandboxId}:`, errorMessage);
+
+      // Handle various error cases gracefully
+      const isNotFound =
+        errorMessage.includes("not found") ||
+        errorMessage.includes("does not exist") ||
+        errorMessage.includes("404");
+
+      const isAuthError =
+        errorMessage.includes("unauthorized") ||
+        errorMessage.includes("401") ||
+        errorMessage.includes("403") ||
+        errorMessage.includes("OIDC") ||
+        errorMessage.includes("token");
+
+      if (isNotFound) {
+        console.log(`Sandbox ${sandboxId} not found (may already be stopped)`);
+        return NextResponse.json({ success: true, sandboxId, notFound: true });
+      }
+
+      if (isAuthError) {
+        // Auth error - sandbox may still exist but we can't stop it
+        // Return success to let Convex clean up its state, sandbox will auto-expire
+        console.warn(`Auth error stopping ${sandboxId}, will auto-expire`);
+        return NextResponse.json({
+          success: true,
+          sandboxId,
+          warning: "Auth error - sandbox will auto-expire"
+        });
+      }
+
+      throw sandboxError;
+    }
 
     return NextResponse.json({ success: true, sandboxId });
   } catch (error) {
