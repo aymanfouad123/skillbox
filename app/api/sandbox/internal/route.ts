@@ -198,12 +198,15 @@ export async function POST(request: Request) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
 
     const ttydUrl = sandbox.domain(7681);
-    console.log(`Sandbox ready: ${ttydUrl}`);
+    // Only expose preview URL if dev server is ready
+    const previewUrl = devReady ? sandbox.domain(3000) : undefined;
+    console.log(`Sandbox ready: ${ttydUrl}${previewUrl ? `, preview: ${previewUrl}` : ""}`);
 
     success = true;
     return NextResponse.json({
       sandboxId: sandbox.sandboxId,
       ttydUrl,
+      previewUrl,
       status: "ready",
       // Vercel timing for accurate countdown
       vercelCreatedAt: sandbox.createdAt.getTime(),
