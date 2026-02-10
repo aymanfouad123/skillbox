@@ -238,64 +238,36 @@ export function getDevServerConfig(
   switch (projectType) {
     case "node": {
       return (async () => {
-        const hasPnpm =
-          (
-            await sandbox.runCommand({
-              cmd: "test",
-              args: ["-f", "/vercel/sandbox/pnpm-lock.yaml"],
-              cwd: "/vercel/sandbox",
-            })
-          ).exitCode === 0;
-        const cmd = hasPnpm ? "pnpm run dev" : "npm run dev";
-        return { port: 3000, command: cmd, label: "Node" };
+        const pnpmLock = await sandbox.readFileToBuffer({ path: "/vercel/sandbox/pnpm-lock.yaml" });
+        if (pnpmLock != null) {
+          return { port: 3000, command: "pnpm install --frozen-lockfile && pnpm run dev", label: "Node (pnpm)" };
+        }
+        const yarnLock = await sandbox.readFileToBuffer({ path: "/vercel/sandbox/yarn.lock" });
+        if (yarnLock != null) {
+          return { port: 3000, command: "yarn install --frozen-lockfile && yarn dev", label: "Node (yarn)" };
+        }
+        return { port: 3000, command: "npm install --no-audit --no-fund && npm run dev", label: "Node (npm)" };
       })();
     }
     case "python": {
-      // Prefer Flask if present, else FastAPI/uvicorn, else generic HTTP server
       return (async () => {
-        const hasFlask =
-          (
-            await sandbox.runCommand({
-              cmd: "bash",
-              args: [
-                "-c",
-                "test -f /vercel/sandbox/requirements.txt && grep -qi flask /vercel/sandbox/requirements.txt",
-              ],
-              cwd: "/vercel/sandbox",
-            })
-          ).exitCode === 0;
-        const hasUvicorn =
-          (
-            await sandbox.runCommand({
-              cmd: "bash",
-              args: [
-                "-c",
-                "test -f /vercel/sandbox/requirements.txt && grep -q uvicorn /vercel/sandbox/requirements.txt",
-              ],
-              cwd: "/vercel/sandbox",
-            })
-          ).exitCode === 0;
-        if (hasFlask) {
+        const reqFile = await sandbox.readFileToBuffer({ path: "/vercel/sandbox/requirements.txt" });
+        const reqContent = reqFile?.toString() ?? "";
+        if (/flask/i.test(reqContent)) {
           return {
             port: 3000,
-            command:
-              "pip install -q -r requirements.txt && flask run --host=0.0.0.0 --port 3000",
+            command: "pip install -q -r requirements.txt && flask run --host=0.0.0.0 --port 3000",
             label: "Flask",
           };
         }
-        if (hasUvicorn) {
+        if (reqContent.includes("uvicorn")) {
           return {
             port: 3000,
-            command:
-              "pip install -q -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 3000",
+            command: "pip install -q -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 3000",
             label: "FastAPI",
           };
         }
-        return {
-          port: 3000,
-          command: "python3 -m http.server 3000",
-          label: "Python",
-        };
+        return { port: 3000, command: "python3 -m http.server 3000", label: "Python" };
       })();
     }
     case "go":
@@ -393,6 +365,69 @@ export async function waitForTTYD(sandbox: Sandbox): Promise<boolean> {
     await new Promise((r) => setTimeout(r, 1000));
   }
   return ready;
+}
+
+export interface WarmSandboxOptions {
+  /** Prefix for log messages */
+  logPrefix?: string;
+  /** When set and dev server becomes ready, mark preview ready in Convex via HTTP action */
+  sandboxId?: string;
+}
+
+/**
+ * Run readiness probes without blocking API response.
+ * When dev server is ready and sandboxId is set, calls Convex HTTP action to set previewReady.
+ * Requires NEXT_PUBLIC_CONVEX_SITE_URL (HTTP actions base URL) and CONVEX_INTERNAL_SECRET to be set.
+ */
+export function warmSandboxServicesInBackground(
+  sandbox: Sandbox,
+  devPort: number,
+  options: WarmSandboxOptions = {},
+): void {
+  const logPrefix = options.logPrefix ?? "";
+  const sandboxId = options.sandboxId;
+  const siteUrl = process.env.NEXT_PUBLIC_CONVEX_SITE_URL;
+  const secret = process.env.CONVEX_INTERNAL_SECRET;
+
+  void (async () => {
+    const [devReady, ttydReady] = await Promise.all([
+      waitForDevServer(sandbox, devPort),
+      waitForTTYD(sandbox),
+    ]);
+    if (!devReady) {
+      console.warn(`${logPrefix}Dev server timed out but continuing anyway.`);
+    }
+    if (!ttydReady) {
+      console.warn(`${logPrefix}TTYD timed out but returning URL anyway.`);
+    }
+    if (devReady && ttydReady) {
+      console.log(`${logPrefix}TTYD and preview are ready.`);
+    }
+    if (devReady && sandboxId && !siteUrl) {
+      console.warn(`${logPrefix}NEXT_PUBLIC_CONVEX_SITE_URL not set, skipping mark-preview-ready.`);
+    }
+    if (devReady && sandboxId && siteUrl && secret) {
+      try {
+        const res = await fetch(`${siteUrl}/mark-preview-ready`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Internal-Secret": secret,
+          },
+          body: JSON.stringify({ sandboxId }),
+        });
+        if (!res.ok) {
+          console.warn(
+            `${logPrefix}Failed to mark preview ready: ${res.status}`,
+          );
+        }
+      } catch (err) {
+        console.warn(`${logPrefix}Mark preview ready request failed:`, err);
+      }
+    }
+  })().catch((err) => {
+    console.warn(`${logPrefix}Background warm-up failed:`, err);
+  });
 }
 
 /**
