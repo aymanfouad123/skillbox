@@ -141,12 +141,8 @@ export async function POST(request: Request) {
     console.log(`[Snapshot Renew] Installing dependencies...`);
 
     // Check for pnpm
-    const checkPnpm = await sandbox.runCommand({
-      cmd: "test",
-      args: ["-f", "/vercel/sandbox/pnpm-lock.yaml"],
-      cwd: "/vercel/sandbox",
-    });
-    const usePnpm = checkPnpm.exitCode === 0;
+    const pnpmLock = await sandbox.readFileToBuffer({ path: "/vercel/sandbox/pnpm-lock.yaml" });
+    const usePnpm = pnpmLock != null;
 
     const installCmd = usePnpm ? "pnpm" : "npm";
     const installResult = await sandbox.runCommand({
