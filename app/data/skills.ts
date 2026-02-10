@@ -83,6 +83,7 @@ export interface Playground {
   owner: string;
   repo: string;
   description: string;
+  /** For one-time seeding only; sandbox boot uses Convex snapshots table as source of truth. */
   snapshotId?: string;
 }
 
