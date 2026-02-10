@@ -79,6 +79,7 @@ export function SandboxPage({
         sandboxId: userStatus.sandboxId,
         ttydUrl: userStatus.ttydUrl,
         previewUrl: userStatus.previewUrl,
+        previewReady: userStatus.previewReady ?? false,
         expiresAt: userStatus.expiresAt,
         hasExtendedTimeout: userStatus.hasExtendedTimeout ?? false,
       };
@@ -1037,16 +1038,22 @@ export function SandboxPage({
                 >
                   {formatTime(timeRemaining)}
                 </span>
-                {/* Preview - only shown if dev server is ready */}
+                {/* Preview - enabled only when dev server is ready (previewReady from Convex) */}
                 {"previewUrl" in sandboxState && sandboxState.previewUrl && (
-                  <a
-                    href={sandboxState.previewUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs px-3 py-1 border border-blue-500/50 text-blue-500 hover:bg-blue-500 hover:text-black"
-                  >
-                    Preview
-                  </a>
+                  sandboxState.previewReady ? (
+                    <a
+                      href={sandboxState.previewUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs px-3 py-1 border border-blue-500/50 text-blue-500 hover:bg-blue-500 hover:text-black"
+                    >
+                      Preview
+                    </a>
+                  ) : (
+                    <span className="text-xs px-3 py-1 border border-white/20 text-gray-500">
+                      Preview booting…
+                    </span>
+                  )
                 )}
                 {/* Download sandbox workspace as tarball */}
                 <button
