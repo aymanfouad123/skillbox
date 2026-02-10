@@ -958,7 +958,7 @@ export function SandboxPage({
                 disabled={!canBoot}
                 className={`w-full mt-6 py-6 border text-lg tracking-widest uppercase ${
                   canBoot
-                    ? "border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-black"
+                    ? "border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-black cursor-pointer"
                     : "border-white/10 text-white/30 cursor-not-allowed"
                 }`}
               >
@@ -1060,7 +1060,7 @@ export function SandboxPage({
                   type="button"
                   onClick={handleDownload}
                   disabled={isDownloading}
-                  className="text-xs px-3 py-1 border border-white/30 text-gray-300 hover:bg-white/10 hover:text-white inline-flex items-center gap-1.5 disabled:opacity-50"
+                  className="text-xs px-3 py-1 border border-white/30 text-gray-300 hover:bg-white/10 hover:text-white inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
                 >
                   <Download className="w-3.5 h-3.5" />
                   {isDownloading ? "Preparing…" : "Download"}
@@ -1085,7 +1085,7 @@ export function SandboxPage({
                   className={`text-xs px-3 py-1 border ${
                     isKilling
                       ? "border-gray-600 text-gray-600 cursor-not-allowed"
-                      : "border-red-500/50 text-red-500 hover:bg-red-500 hover:text-black"
+                      : "border-red-500/50 text-red-500 hover:bg-red-500 hover:text-black cursor-pointer"
                   }`}
                 >
                   {isKilling ? "Killing..." : "Kill Session"}
