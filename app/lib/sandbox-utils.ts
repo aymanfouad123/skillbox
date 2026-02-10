@@ -2,6 +2,9 @@ import { Sandbox } from "@vercel/sandbox";
 import ms from "ms";
 import { CLIProvider, PLAYGROUNDS } from "../data/skills";
 
+// Re-export from convex for use in routes
+export { OPENCODE_SNAPSHOT_SETUP_VERSION } from "../../convex/constants";
+
 // =============================================================================
 // CLI Provider Configuration
 // =============================================================================
@@ -88,7 +91,7 @@ export const CLI_PROVIDERS: Record<CLIProvider, CLIProviderConfig> = {
  */
 export async function installCLI(
   sandbox: Sandbox,
-  provider: CLIProviderConfig
+  provider: CLIProviderConfig,
 ): Promise<void> {
   console.log(`Installing ${provider.name} CLI...`);
   const result = await sandbox.runCommand({
@@ -102,7 +105,7 @@ export async function installCLI(
   if (result.exitCode !== 0) {
     const stderr = await result.stderr();
     throw new Error(
-      `${provider.name} CLI install failed: exitCode ${result.exitCode}, stderr: ${stderr}`
+      `${provider.name} CLI install failed: exitCode ${result.exitCode}, stderr: ${stderr}`,
     );
   }
 }
@@ -135,7 +138,7 @@ export async function injectSkill(
   sandbox: Sandbox,
   skillOwner: string,
   skillRepo: string,
-  skillName: string
+  skillName: string,
 ): Promise<void> {
   console.log(`Adding skill: ${skillName}...`);
   const skillResult = await sandbox.runCommand({
@@ -166,7 +169,7 @@ export async function launchTTYD(
   sandbox: Sandbox,
   ttydPath: string,
   provider: CLIProviderConfig,
-  apiKey?: string
+  apiKey?: string,
 ): Promise<void> {
   console.log(`Launching ${provider.name} Agent...`);
   await sandbox.runCommand({
@@ -190,40 +193,146 @@ export async function launchTTYD(
   });
 }
 
-/**
- * Start the dev server (npm run dev or pnpm dev) in detached mode.
- * Uses pnpm if pnpm-lock.yaml exists in /vercel/sandbox, else npm.
- */
-export async function startDevServer(sandbox: Sandbox): Promise<void> {
-  console.log("Starting dev server...");
-  const checkPnpm = await sandbox.runCommand({
-    cmd: "test",
-    args: ["-f", "/vercel/sandbox/pnpm-lock.yaml"],
-    cwd: "/vercel/sandbox",
-  });
-  const usePnpm = checkPnpm.exitCode === 0;
-  const devCmd = usePnpm ? "pnpm run dev" : "npm run dev";
-  await sandbox.runCommand({
-    cmd: "bash",
-    args: ["-c", `cd /vercel/sandbox && ${devCmd}`],
-    cwd: "/vercel/sandbox",
-    detached: true,
-  });
-  console.log(`Dev server started (${usePnpm ? "pnpm" : "npm"} run dev)`);
+// =============================================================================
+// Project type detection and multi-runtime dev server
+// =============================================================================
+
+export type ProjectType = "node" | "python" | "go" | "java" | "unknown";
+
+export interface DevServerConfig {
+  port: number;
+  /** Shell command to run in /vercel/sandbox (e.g. "npm run dev") */
+  command: string;
+  label: string;
 }
 
 /**
- * Wait for dev server on port 3000 to be ready
+ * Detect project type from repo contents so we can start the right dev server
+ * and use sandbox.domain(port) for preview.
  */
-export async function waitForDevServer(sandbox: Sandbox): Promise<boolean> {
+export async function detectProjectType(
+  sandbox: Sandbox,
+): Promise<ProjectType> {
+  const checks = [
+    { path: "/vercel/sandbox/package.json", type: "node" as const },
+    { path: "/vercel/sandbox/requirements.txt", type: "python" as const },
+    { path: "/vercel/sandbox/pyproject.toml", type: "python" as const },
+    { path: "/vercel/sandbox/go.mod", type: "go" as const },
+    { path: "/vercel/sandbox/pom.xml", type: "java" as const },
+  ];
+  for (const { path, type } of checks) {
+    const f = await sandbox.readFileToBuffer({ path });
+    if (f != null) return type;
+  }
+  return "unknown";
+}
+
+/**
+ * Get dev server command and preview port for a project type.
+ * We standardize previews on port 3000 to keep exposed sandbox ports minimal.
+ */
+export function getDevServerConfig(
+  sandbox: Sandbox,
+  projectType: ProjectType,
+): Promise<DevServerConfig> {
+  switch (projectType) {
+    case "node": {
+      return (async () => {
+        const pnpmLock = await sandbox.readFileToBuffer({ path: "/vercel/sandbox/pnpm-lock.yaml" });
+        if (pnpmLock != null) {
+          return { port: 3000, command: "pnpm install --frozen-lockfile && pnpm run dev", label: "Node (pnpm)" };
+        }
+        const yarnLock = await sandbox.readFileToBuffer({ path: "/vercel/sandbox/yarn.lock" });
+        if (yarnLock != null) {
+          return { port: 3000, command: "yarn install --frozen-lockfile && yarn dev", label: "Node (yarn)" };
+        }
+        return { port: 3000, command: "npm install --no-audit --no-fund && npm run dev", label: "Node (npm)" };
+      })();
+    }
+    case "python": {
+      return (async () => {
+        const reqFile = await sandbox.readFileToBuffer({ path: "/vercel/sandbox/requirements.txt" });
+        const reqContent = reqFile?.toString() ?? "";
+        if (/flask/i.test(reqContent)) {
+          return {
+            port: 3000,
+            command: "pip install -q -r requirements.txt && flask run --host=0.0.0.0 --port 3000",
+            label: "Flask",
+          };
+        }
+        if (reqContent.includes("uvicorn")) {
+          return {
+            port: 3000,
+            command: "pip install -q -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 3000",
+            label: "FastAPI",
+          };
+        }
+        return { port: 3000, command: "python3 -m http.server 3000", label: "Python" };
+      })();
+    }
+    case "go":
+      return Promise.resolve({
+        port: 3000,
+        command: "PORT=3000 go run . 2>/dev/null || PORT=3000 go run main.go",
+        label: "Go",
+      });
+    case "java":
+      return Promise.resolve({
+        port: 3000,
+        command:
+          "mvn -q spring-boot:run -Dspring-boot.run.arguments=--server.port=3000",
+        label: "Java",
+      });
+    default:
+      return Promise.resolve({
+        port: 3000,
+        command: "npm run dev 2>/dev/null || true",
+        label: "Unknown",
+      });
+  }
+}
+
+/**
+ * Start the dev server based on detected project type.
+ * Returns the port used so the caller can call sandbox.domain(port) for preview.
+ */
+export async function startDevServer(sandbox: Sandbox): Promise<number> {
+  const projectType = await detectProjectType(sandbox);
+  const config = await getDevServerConfig(sandbox, projectType);
+  console.log(`Starting dev server (${config.label}, port ${config.port})...`);
+  await sandbox.runCommand({
+    cmd: "bash",
+    args: ["-c", `cd /vercel/sandbox && ${config.command}`],
+    cwd: "/vercel/sandbox",
+    detached: true,
+  });
+  console.log(`Dev server started: ${config.command}`);
+  return config.port;
+}
+
+/**
+ * Wait for dev server on the given port to be ready.
+ */
+export async function waitForDevServer(
+  sandbox: Sandbox,
+  port: number,
+): Promise<boolean> {
   let ready = false;
   for (let i = 0; i < 60; i++) {
     try {
       const check = await sandbox.runCommand({
         cmd: "curl",
-        args: ["-s", "http://localhost:3000"],
+        args: [
+          "-s",
+          "-o",
+          "/dev/null",
+          "-w",
+          "%{http_code}",
+          `http://localhost:${port}`,
+        ],
       });
-      if (check.exitCode === 0) {
+      const code = await check.stdout();
+      if (check.exitCode === 0 && code !== "000") {
         ready = true;
         break;
       }
@@ -256,6 +365,69 @@ export async function waitForTTYD(sandbox: Sandbox): Promise<boolean> {
     await new Promise((r) => setTimeout(r, 1000));
   }
   return ready;
+}
+
+export interface WarmSandboxOptions {
+  /** Prefix for log messages */
+  logPrefix?: string;
+  /** When set and dev server becomes ready, mark preview ready in Convex via HTTP action */
+  sandboxId?: string;
+}
+
+/**
+ * Run readiness probes without blocking API response.
+ * When dev server is ready and sandboxId is set, calls Convex HTTP action to set previewReady.
+ * Requires NEXT_PUBLIC_CONVEX_SITE_URL (HTTP actions base URL) and CONVEX_INTERNAL_SECRET to be set.
+ */
+export function warmSandboxServicesInBackground(
+  sandbox: Sandbox,
+  devPort: number,
+  options: WarmSandboxOptions = {},
+): void {
+  const logPrefix = options.logPrefix ?? "";
+  const sandboxId = options.sandboxId;
+  const siteUrl = process.env.NEXT_PUBLIC_CONVEX_SITE_URL;
+  const secret = process.env.CONVEX_INTERNAL_SECRET;
+
+  void (async () => {
+    const [devReady, ttydReady] = await Promise.all([
+      waitForDevServer(sandbox, devPort),
+      waitForTTYD(sandbox),
+    ]);
+    if (!devReady) {
+      console.warn(`${logPrefix}Dev server timed out but continuing anyway.`);
+    }
+    if (!ttydReady) {
+      console.warn(`${logPrefix}TTYD timed out but returning URL anyway.`);
+    }
+    if (devReady && ttydReady) {
+      console.log(`${logPrefix}TTYD and preview are ready.`);
+    }
+    if (devReady && sandboxId && !siteUrl) {
+      console.warn(`${logPrefix}NEXT_PUBLIC_CONVEX_SITE_URL not set, skipping mark-preview-ready.`);
+    }
+    if (devReady && sandboxId && siteUrl && secret) {
+      try {
+        const res = await fetch(`${siteUrl}/mark-preview-ready`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Internal-Secret": secret,
+          },
+          body: JSON.stringify({ sandboxId }),
+        });
+        if (!res.ok) {
+          console.warn(
+            `${logPrefix}Failed to mark preview ready: ${res.status}`,
+          );
+        }
+      } catch (err) {
+        console.warn(`${logPrefix}Mark preview ready request failed:`, err);
+      }
+    }
+  })().catch((err) => {
+    console.warn(`${logPrefix}Background warm-up failed:`, err);
+  });
 }
 
 /**
@@ -331,15 +503,23 @@ export interface CreateSandboxParams {
   logPrefix?: string;
 }
 
+export interface CreateSandboxResult {
+  sandbox: Sandbox;
+  /** True if the sandbox was created from a snapshot (not git/create-next-app) */
+  snapshotUsed: boolean;
+}
+
 /**
  * Create sandbox from snapshot (with fallback) or git/create-next-app.
  * Shared by public and internal sandbox routes.
+ * Returns outcome so callers can skip OpenCode install when prebaked and trigger renewal on failure.
  */
 export async function createSandboxWithSnapshotOrGit(
-  params: CreateSandboxParams
-): Promise<Sandbox> {
+  params: CreateSandboxParams,
+): Promise<CreateSandboxResult> {
   const { targetOwner, targetRepo, snapshotId, logPrefix = "" } = params;
   let sandbox: Sandbox | null = null;
+  let snapshotUsed = false;
 
   if (snapshotId) {
     try {
@@ -350,11 +530,14 @@ export async function createSandboxWithSnapshotOrGit(
         ports: [3000, 7681],
         runtime: "node24",
       });
-      console.log(`${logPrefix}Sandbox created from snapshot: ${sandbox.sandboxId}`);
+      snapshotUsed = true;
+      console.log(
+        `${logPrefix}Sandbox created from snapshot: ${sandbox.sandboxId}`,
+      );
     } catch (snapshotErr) {
       console.warn(
         `${logPrefix}Snapshot boot failed (${snapshotId}), falling back to git/create-next-app:`,
-        snapshotErr instanceof Error ? snapshotErr.message : snapshotErr
+        snapshotErr instanceof Error ? snapshotErr.message : snapshotErr,
       );
     }
   }
@@ -390,7 +573,103 @@ export async function createSandboxWithSnapshotOrGit(
     }
   }
 
-  return sandbox;
+  return { sandbox, snapshotUsed };
+}
+
+/**
+ * Trigger asynchronous snapshot renewal for a playground (e.g. after snapshot boot failed).
+ * Fetches from the renewal endpoint, registers the new snapshot in Convex.
+ * Includes deduplication: won't start renewal if already in progress.
+ */
+export async function triggerSnapshotRenewal(
+  playgroundId: string,
+  sourceOwner: string,
+  sourceRepo: string,
+): Promise<void> {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const secret = process.env.CONVEX_INTERNAL_SECRET;
+  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+
+  if (!baseUrl || !secret || !convexUrl) {
+    console.warn(
+      "[triggerSnapshotRenewal] Missing env vars (NEXT_PUBLIC_APP_URL, CONVEX_INTERNAL_SECRET, or NEXT_PUBLIC_CONVEX_URL), skipping renewal",
+    );
+    return;
+  }
+
+  try {
+    // Check if renewal is already in progress (deduplication)
+    const { ConvexHttpClient } = await import("convex/browser");
+    const client = new ConvexHttpClient(convexUrl);
+    const { api } = await import("../../convex/_generated/api");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { renewing } = await client.query((api.snapshots as any).isSnapshotRenewing, {
+      playgroundId,
+    });
+
+    if (renewing) {
+      console.log(`[triggerSnapshotRenewal] ${playgroundId} already renewing, skipping duplicate`);
+      return;
+    }
+
+    // Mark as renewing before starting (deduplication guard)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await client.mutation((api.snapshots as any).markSnapshotRenewing, {
+      playgroundId,
+    });
+
+    // Start renewal
+    console.log(`[triggerSnapshotRenewal] Starting renewal for ${playgroundId}...`);
+    const response = await fetch(`${baseUrl}/api/snapshots/renew`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": secret,
+      },
+      body: JSON.stringify({
+        playgroundId,
+        sourceOwner,
+        sourceRepo,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      const errMsg =
+        typeof errorBody?.error === "string"
+          ? errorBody.error
+          : `HTTP ${response.status}`;
+      console.error(`[triggerSnapshotRenewal] ${playgroundId} failed:`, errMsg);
+
+      // Revert to active on failure
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await client.mutation((api.snapshots as any).revertSnapshotRenewingToActive, {
+        playgroundId,
+        lastRenewalError: errMsg,
+      });
+      return;
+    }
+
+    const data = await response.json();
+    console.log(
+      `[triggerSnapshotRenewal] ${playgroundId} renewed: ${data.snapshotId}`
+    );
+
+    // Register the new snapshot
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await client.mutation((api.snapshots as any).registerOrUpdateSnapshot, {
+      playgroundId: data.playgroundId,
+      snapshotId: data.snapshotId,
+      sourceOwner,
+      sourceRepo,
+      flavor: data.flavor,
+      setupVersion: data.setupVersion,
+      capabilities: data.capabilities,
+    });
+  } catch (err) {
+    console.error(`[triggerSnapshotRenewal] ${playgroundId} error:`, err);
+  }
 }
 
 /**
@@ -403,7 +682,7 @@ export function resolvePlayground(targetOwner: string, targetRepo: string) {
       : targetOwner;
   const effectiveRepo = targetRepo;
   const playground = PLAYGROUNDS.find(
-    (p) => p.owner === effectiveOwner && p.repo === effectiveRepo
+    (p) => p.owner === effectiveOwner && p.repo === effectiveRepo,
   );
   return { effectiveOwner, effectiveRepo, playground };
 }

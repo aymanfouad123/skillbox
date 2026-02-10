@@ -8,7 +8,8 @@ export default defineSchema({
     userId: v.string(),
     sandboxId: v.string(), // Real Vercel sandbox ID (required)
     ttydUrl: v.string(), // Real terminal URL (required)
-    previewUrl: v.optional(v.string()), // Public dev-server URL (only set if ready)
+    previewUrl: v.optional(v.string()), // Public dev-server URL (exposed at boot; may not be ready yet)
+    previewReady: v.optional(v.boolean()), // True once dev server readiness probe succeeds
     skill: v.string(), // "owner/repo/skillName"
     cliProvider: v.union(v.literal("opencode"), v.literal("claude")),
     status: v.union(
@@ -74,8 +75,14 @@ export default defineSchema({
     // Metadata for recreation
     sourceOwner: v.string(), // GitHub owner or "create" for fresh
     sourceRepo: v.string(), // GitHub repo or "nextjs" for fresh
+    // Compatibility: what is prebaked (enables skip-install at boot)
+    flavor: v.optional(v.union(v.literal("opencode"))), // more flavors later
+    setupVersion: v.optional(v.number()), // e.g. OPENCODE_SNAPSHOT_SETUP_VERSION
+    capabilities: v.optional(v.array(v.string())), // e.g. ["opencode_cli", "opencode_config"]
+    lastRenewalError: v.optional(v.string()), // observability when renewal failed
   })
     .index("by_playgroundId", ["playgroundId"])
     .index("by_status", ["status"])
-    .index("by_expiresAt", ["expiresAt"]),
+    .index("by_expiresAt", ["expiresAt"])
+    .index("by_playground_flavor_status", ["playgroundId", "flavor", "status"]),
 });

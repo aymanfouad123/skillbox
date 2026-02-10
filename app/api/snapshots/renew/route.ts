@@ -2,6 +2,8 @@ import { Sandbox } from "@vercel/sandbox";
 import { NextResponse } from "next/server";
 import crypto from "node:crypto";
 import ms from "ms";
+import { CLI_PROVIDERS } from "../../../lib/sandbox-utils";
+import { OPENCODE_SNAPSHOT_SETUP_VERSION } from "../../../../convex/constants";
 
 // =============================================================================
 // Internal Secret Validation
@@ -70,6 +72,8 @@ export async function POST(request: Request) {
     // Determine how to create the sandbox based on source
     const isCreateNew = sourceOwner === "create" && sourceRepo === "nextjs";
 
+    // NOTE: All current playgrounds use Node.js (commerce, chat, new-nextjs).
+    // If adding Python/Go/Java playgrounds, detect project type and use appropriate runtime.
     if (isCreateNew) {
       // Fresh Next.js project
       sandbox = await Sandbox.create({
@@ -137,12 +141,8 @@ export async function POST(request: Request) {
     console.log(`[Snapshot Renew] Installing dependencies...`);
 
     // Check for pnpm
-    const checkPnpm = await sandbox.runCommand({
-      cmd: "test",
-      args: ["-f", "/vercel/sandbox/pnpm-lock.yaml"],
-      cwd: "/vercel/sandbox",
-    });
-    const usePnpm = checkPnpm.exitCode === 0;
+    const pnpmLock = await sandbox.readFileToBuffer({ path: "/vercel/sandbox/pnpm-lock.yaml" });
+    const usePnpm = pnpmLock != null;
 
     const installCmd = usePnpm ? "pnpm" : "npm";
     const installResult = await sandbox.runCommand({
@@ -159,6 +159,21 @@ export async function POST(request: Request) {
 
     console.log(`[Snapshot Renew] Dependencies installed (${installCmd})`);
 
+    // Install and configure OpenCode so snapshots are prebaked (skip at boot)
+    const opencode = CLI_PROVIDERS.opencode;
+    console.log(`[Snapshot Renew] Installing ${opencode.name} CLI...`);
+    const cliResult = await sandbox.runCommand({
+      cmd: opencode.installCommand.cmd,
+      args: opencode.installCommand.args,
+      sudo: true,
+    });
+    if (cliResult.exitCode !== 0) {
+      const stderr = await cliResult.stderr();
+      throw new Error(`OpenCode install failed: ${stderr}`);
+    }
+    console.log(`[Snapshot Renew] Configuring ${opencode.name}...`);
+    await opencode.configSetup(sandbox);
+
     // Create snapshot - this stops the sandbox automatically
     console.log(`[Snapshot Renew] Creating snapshot...`);
     const snapshot = await sandbox.snapshot();
@@ -174,6 +189,9 @@ export async function POST(request: Request) {
       success: true,
       snapshotId: snapshot.snapshotId,
       playgroundId,
+      flavor: "opencode",
+      setupVersion: OPENCODE_SNAPSHOT_SETUP_VERSION,
+      capabilities: ["opencode_cli", "opencode_config"],
     });
   } catch (error) {
     console.error("[Snapshot Renew] Failed:", error);

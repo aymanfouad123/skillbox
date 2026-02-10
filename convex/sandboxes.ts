@@ -52,6 +52,7 @@ export const getUserStatus = query({
         sandboxId: sandbox.sandboxId,
         ttydUrl: sandbox.ttydUrl,
         previewUrl: sandbox.previewUrl,
+        previewReady: sandbox.previewReady ?? false,
         expiresAt: sandbox.expiresAt,
         // Vercel timing for accurate countdown
         vercelCreatedAt: sandbox.vercelCreatedAt,
@@ -167,12 +168,13 @@ export const registerSandbox = mutation({
       expiresAt = Math.min(expiresAt, vercelExpiresAt - 30000); // 30s buffer
     }
 
-    // Create the sandbox record with complete data
+    // Create the sandbox record with complete data (previewReady starts false; updated when probe succeeds)
     await ctx.db.insert("sandboxes", {
       userId: args.userId,
       sandboxId: args.sandboxId,
       ttydUrl: args.ttydUrl,
       previewUrl: args.previewUrl,
+      previewReady: false,
       skill: args.skill,
       cliProvider: args.cliProvider,
       status: "active",
@@ -512,6 +514,23 @@ export const updateSandboxAfterExtend = internalMutation({
 });
 
 /**
+ * Mark preview as ready after dev server readiness probe succeeds (called from API background warm-up)
+ */
+export const markPreviewReady = internalMutation({
+  args: { sandboxId: v.string() },
+  handler: async (ctx, args) => {
+    const sandbox = await ctx.db
+      .query("sandboxes")
+      .withIndex("by_sandboxId", (q) => q.eq("sandboxId", args.sandboxId))
+      .filter((q) => q.eq(q.field("status"), "active"))
+      .first();
+    if (sandbox) {
+      await ctx.db.patch(sandbox._id, { previewReady: true });
+    }
+  },
+});
+
+/**
  * Register sandbox from queue processing (internal)
  */
 export const registerSandboxInternal = internalMutation({
@@ -536,12 +555,13 @@ export const registerSandboxInternal = internalMutation({
       expiresAt = Math.min(expiresAt, vercelExpiresAt - 30000);
     }
 
-    // Create sandbox
+    // Create sandbox (previewReady starts false; updated when probe succeeds)
     await ctx.db.insert("sandboxes", {
       userId: args.userId,
       sandboxId: args.sandboxId,
       ttydUrl: args.ttydUrl,
       previewUrl: args.previewUrl,
+      previewReady: false,
       skill: args.skill,
       cliProvider: args.cliProvider,
       status: "active",

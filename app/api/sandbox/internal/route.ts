@@ -10,11 +10,12 @@ import {
   installTTYD,
   injectSkill,
   launchTTYD,
-  waitForTTYD,
-  waitForDevServer,
+  warmSandboxServicesInBackground,
   startDevServer,
   createSandboxWithSnapshotOrGit,
   resolvePlayground,
+  OPENCODE_SNAPSHOT_SETUP_VERSION,
+  triggerSnapshotRenewal,
 } from "../../../lib/sandbox-utils";
 
 // Lazy Convex client - only init when URL is set to avoid crash on missing env
@@ -136,20 +137,39 @@ export async function POST(request: Request) {
 
     const provider = CLI_PROVIDERS[cliProvider];
 
-    // 1. Resolve playground and snapshot
+    // 1. Resolve playground and snapshot from Convex only (prefer compatible prebaked for OpenCode)
     const { playground } = resolvePlayground(targetOwner, targetRepo);
-    let snapshotId = playground?.snapshotId ?? null;
+    let snapshotId: string | null = null;
+    let usedCompatibleOpencodeSnapshot = false;
     const convex = getConvexClient();
     if (playground && convex) {
       try {
-        const convexSnapshot = await convex.query(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (api as any).snapshots?.getSnapshot,
-          { playgroundId: playground.id }
-        );
-        if (convexSnapshot?.snapshotId) {
-          snapshotId = convexSnapshot.snapshotId;
-          console.log(`[Internal] Using Convex snapshot: ${snapshotId}`);
+        if (cliProvider === "opencode") {
+          const compatible = await convex.query(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (api as any).snapshots?.getCompatibleSnapshot,
+            {
+              playgroundId: playground.id,
+              flavor: "opencode",
+              setupVersion: OPENCODE_SNAPSHOT_SETUP_VERSION,
+            }
+          );
+          if (compatible?.snapshotId) {
+            snapshotId = compatible.snapshotId;
+            usedCompatibleOpencodeSnapshot = true;
+            console.log(`[Internal] Using compatible OpenCode snapshot: ${snapshotId}`);
+          }
+        }
+        if (!snapshotId) {
+          const convexSnapshot = await convex.query(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (api as any).snapshots?.getSnapshot,
+            { playgroundId: playground.id }
+          );
+          if (convexSnapshot?.snapshotId) {
+            snapshotId = convexSnapshot.snapshotId;
+            console.log(`[Internal] Using Convex snapshot: ${snapshotId}`);
+          }
         }
       } catch (err) {
         console.log("[Internal] Convex snapshot query failed, using fallback:", err);
@@ -163,15 +183,31 @@ export async function POST(request: Request) {
     );
 
     // 2. Create Sandbox (shared helper with snapshot fallback)
-    sandbox = await createSandboxWithSnapshotOrGit({
-      targetOwner,
-      targetRepo,
-      snapshotId,
-      logPrefix: "[Internal] ",
-    });
+    const { sandbox: createdSandbox, snapshotUsed } =
+      await createSandboxWithSnapshotOrGit({
+        targetOwner,
+        targetRepo,
+        snapshotId,
+        logPrefix: "[Internal] ",
+      });
+    sandbox = createdSandbox;
 
-    // 3. Install CLI
-    await installCLI(sandbox, provider);
+    if (snapshotId && !snapshotUsed && playground) {
+      // Fire-and-forget: don't block sandbox boot on renewal
+      triggerSnapshotRenewal(playground.id, playground.owner, playground.repo).catch(
+        (err) => console.warn("[Internal] Renewal trigger failed:", err)
+      );
+    }
+
+    const skipOpencodeInstall =
+      cliProvider === "opencode" && usedCompatibleOpencodeSnapshot && snapshotUsed;
+
+    // 3. Install CLI (skip when prebaked OpenCode snapshot was used)
+    if (!skipOpencodeInstall) {
+      await installCLI(sandbox, provider);
+    } else {
+      console.log("[Internal] Skipping OpenCode CLI install (prebaked snapshot)");
+    }
 
     // 4. Install TTYD
     const ttydPath = await installTTYD(sandbox);
@@ -179,27 +215,27 @@ export async function POST(request: Request) {
     // 5. Inject the Skill
     await injectSkill(sandbox, skillOwner, skillRepo, skillName);
 
-    // 6. Configure CLI
-    console.log(`Setting up ${provider.name} CLI configuration...`);
-    await provider.configSetup(sandbox);
+    // 6. Configure CLI (skip when prebaked OpenCode snapshot was used)
+    if (!skipOpencodeInstall) {
+      console.log(`Setting up ${provider.name} CLI configuration...`);
+      await provider.configSetup(sandbox);
+    } else {
+      console.log("[Internal] Skipping OpenCode config (prebaked snapshot)");
+    }
 
     // 7. Launch TTYD
     await launchTTYD(sandbox, ttydPath, provider, anthropicApiKey);
 
-    // 8. Start dev server and wait for readiness
-    await startDevServer(sandbox);
-    const devReady = await waitForDevServer(sandbox);
-    if (!devReady) console.warn("[Internal] Dev server timed out but continuing anyway.");
-
-    // 9. Wait for TTYD
-    const ready = await waitForTTYD(sandbox);
-    if (!ready) console.warn("TTYD timed out but returning URL anyway.");
-
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    // 8. Start dev server (detects project type)
+    const devPort = await startDevServer(sandbox);
+    warmSandboxServicesInBackground(sandbox, devPort, {
+      logPrefix: "[Internal] ",
+      sandboxId: sandbox.sandboxId,
+    });
 
     const ttydUrl = sandbox.domain(7681);
-    // Only expose preview URL if dev server is ready
-    const previewUrl = devReady ? sandbox.domain(3000) : undefined;
+    // Expose preview URL immediately; readiness probes run in background.
+    const previewUrl = sandbox.domain(devPort);
     console.log(`Sandbox ready: ${ttydUrl}${previewUrl ? `, preview: ${previewUrl}` : ""}`);
 
     success = true;
