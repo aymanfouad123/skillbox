@@ -9,8 +9,7 @@ import {
   installTTYD,
   injectSkill,
   launchTTYD,
-  waitForTTYD,
-  waitForDevServer,
+  warmSandboxServicesInBackground,
   startDevServer,
   createSandboxWithSnapshotOrGit,
   resolvePlayground,
@@ -159,20 +158,14 @@ export async function POST(request: Request) {
     // 7. Launch TTYD with CLI
     await launchTTYD(sandbox, ttydPath, provider, anthropicApiKey);
 
-    // 8. Start dev server (detects project type: Node, Python, Go, Java) and wait for readiness
+    // 8. Start dev server (detects project type: Node, Python, Go, Java)
     const devPort = await startDevServer(sandbox);
-    const devReady = await waitForDevServer(sandbox, devPort);
-    if (!devReady) console.warn("Dev server timed out but continuing anyway.");
-
-    // 9. Wait for TTYD to be ready
-    const ready = await waitForTTYD(sandbox);
-    if (!ready) console.warn("TTYD timed out but returning URL anyway.");
-
-    // Give TTYD and CLI additional time to fully initialize
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    warmSandboxServicesInBackground(sandbox, devPort, {
+      sandboxId: sandbox.sandboxId,
+    });
 
     const ttydUrl = sandbox.domain(7681);
-    // Expose preview URL even when readiness probe times out; app may still become ready shortly after.
+    // Expose preview URL immediately; readiness probes run in background.
     const previewUrl = sandbox.domain(devPort);
     console.log(`Sandbox ready: ${ttydUrl}${previewUrl ? `, preview: ${previewUrl}` : ""}`);
 
