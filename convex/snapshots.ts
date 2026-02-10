@@ -10,6 +10,7 @@ import {
   SNAPSHOT_EXPIRATION_MS,
   SNAPSHOT_RENEWAL_THRESHOLD_MS,
   SNAPSHOT_RENEWAL_RETRY_MS,
+  OPENCODE_SNAPSHOT_SETUP_VERSION,
 } from "./constants";
 
 // Type assertion for internal API (types regenerated on `npx convex dev`)
@@ -43,7 +44,7 @@ const INITIAL_SNAPSHOTS = [
 // =============================================================================
 
 /**
- * Get the active snapshot for a playground
+ * Get the active snapshot for a playground (any flavor)
  */
 export const getSnapshot = query({
   args: { playgroundId: v.string() },
@@ -56,6 +57,38 @@ export const getSnapshot = query({
       .filter((q) => q.eq(q.field("status"), "active"))
       .first();
 
+    return snapshot;
+  },
+});
+
+/**
+ * Get a compatible prebaked snapshot for boot (playground + flavor + setupVersion).
+ * Used to skip OpenCode install when a matching snapshot exists.
+ */
+export const getCompatibleSnapshot = query({
+  args: {
+    playgroundId: v.string(),
+    flavor: v.union(v.literal("opencode")),
+    setupVersion: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const snapshot = await ctx.db
+      .query("snapshots")
+      .withIndex("by_playground_flavor_status", (q) =>
+        q
+          .eq("playgroundId", args.playgroundId)
+          .eq("flavor", args.flavor)
+          .eq("status", "active")
+      )
+      .first();
+
+    if (
+      !snapshot ||
+      snapshot.setupVersion === undefined ||
+      snapshot.setupVersion !== args.setupVersion
+    ) {
+      return null;
+    }
     return snapshot;
   },
 });
@@ -107,6 +140,9 @@ export const registerSnapshot = mutation({
     snapshotId: v.string(),
     sourceOwner: v.string(),
     sourceRepo: v.string(),
+    flavor: v.optional(v.union(v.literal("opencode"))),
+    setupVersion: v.optional(v.number()),
+    capabilities: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
@@ -133,9 +169,77 @@ export const registerSnapshot = mutation({
       status: "active",
       sourceOwner: args.sourceOwner,
       sourceRepo: args.sourceRepo,
+      ...(args.flavor !== undefined && { flavor: args.flavor }),
+      ...(args.setupVersion !== undefined && { setupVersion: args.setupVersion }),
+      ...(args.capabilities !== undefined && { capabilities: args.capabilities }),
     });
 
     return { success: true };
+  },
+});
+
+/**
+ * Register or update a snapshot from ad-hoc renewal (boot-time failure).
+ * Similar to registerSnapshot but updates if already renewing (deduplication).
+ */
+export const registerOrUpdateSnapshot = mutation({
+  args: {
+    playgroundId: v.string(),
+    snapshotId: v.string(),
+    sourceOwner: v.string(),
+    sourceRepo: v.string(),
+    flavor: v.optional(v.union(v.literal("opencode"))),
+    setupVersion: v.optional(v.number()),
+    capabilities: v.optional(v.array(v.string())),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+
+    // Mark any existing snapshots for this playground as expired
+    const existing = await ctx.db
+      .query("snapshots")
+      .withIndex("by_playgroundId", (q) =>
+        q.eq("playgroundId", args.playgroundId)
+      )
+      .collect();
+
+    for (const snapshot of existing) {
+      await ctx.db.patch(snapshot._id, { status: "expired" });
+    }
+
+    // Create new snapshot record
+    await ctx.db.insert("snapshots", {
+      playgroundId: args.playgroundId,
+      snapshotId: args.snapshotId,
+      createdAt: now,
+      expiresAt: now + SNAPSHOT_EXPIRATION_MS,
+      status: "active",
+      sourceOwner: args.sourceOwner,
+      sourceRepo: args.sourceRepo,
+      ...(args.flavor !== undefined && { flavor: args.flavor }),
+      ...(args.setupVersion !== undefined && { setupVersion: args.setupVersion }),
+      ...(args.capabilities !== undefined && { capabilities: args.capabilities }),
+    });
+
+    return { success: true };
+  },
+});
+
+/**
+ * Check if a snapshot is currently renewing (for deduplication).
+ */
+export const isSnapshotRenewing = query({
+  args: { playgroundId: v.string() },
+  handler: async (ctx, args) => {
+    const snapshot = await ctx.db
+      .query("snapshots")
+      .withIndex("by_playgroundId", (q) =>
+        q.eq("playgroundId", args.playgroundId)
+      )
+      .filter((q) => q.eq(q.field("status"), "renewing"))
+      .first();
+
+    return { renewing: !!snapshot };
   },
 });
 
@@ -182,9 +286,10 @@ export const seedInitialSnapshots = mutation({
 // =============================================================================
 
 /**
- * Mark a snapshot as renewing (called before starting renewal)
+ * Mark a snapshot as renewing (called before starting renewal).
+ * Public version for ad-hoc renewal deduplication.
  */
-export const markSnapshotRenewing = internalMutation({
+export const markSnapshotRenewing = mutation({
   args: { playgroundId: v.string() },
   handler: async (ctx, args) => {
     const snapshot = await ctx.db
@@ -202,10 +307,34 @@ export const markSnapshotRenewing = internalMutation({
 });
 
 /**
- * Revert snapshot from renewing back to active (on renewal failure)
+ * Internal version for cron-based renewal
  */
-export const revertSnapshotRenewingToActive = internalMutation({
+export const markSnapshotRenewingInternal = internalMutation({
   args: { playgroundId: v.string() },
+  handler: async (ctx, args) => {
+    const snapshot = await ctx.db
+      .query("snapshots")
+      .withIndex("by_playgroundId", (q) =>
+        q.eq("playgroundId", args.playgroundId)
+      )
+      .filter((q) => q.eq(q.field("status"), "active"))
+      .first();
+
+    if (snapshot) {
+      await ctx.db.patch(snapshot._id, { status: "renewing" });
+    }
+  },
+});
+
+/**
+ * Revert snapshot from renewing back to active (on renewal failure).
+ * Public version for ad-hoc renewal error handling.
+ */
+export const revertSnapshotRenewingToActive = mutation({
+  args: {
+    playgroundId: v.string(),
+    lastRenewalError: v.optional(v.string()),
+  },
   handler: async (ctx, args) => {
     const snapshot = await ctx.db
       .query("snapshots")
@@ -216,18 +345,54 @@ export const revertSnapshotRenewingToActive = internalMutation({
       .first();
 
     if (snapshot) {
-      await ctx.db.patch(snapshot._id, { status: "active" });
+      await ctx.db.patch(snapshot._id, {
+        status: "active",
+        ...(args.lastRenewalError !== undefined && {
+          lastRenewalError: args.lastRenewalError,
+        }),
+      });
     }
   },
 });
 
 /**
- * Update snapshot after renewal
+ * Internal version for cron-based renewal
+ */
+export const revertSnapshotRenewingToActiveInternal = internalMutation({
+  args: {
+    playgroundId: v.string(),
+    lastRenewalError: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const snapshot = await ctx.db
+      .query("snapshots")
+      .withIndex("by_playgroundId", (q) =>
+        q.eq("playgroundId", args.playgroundId)
+      )
+      .filter((q) => q.eq(q.field("status"), "renewing"))
+      .first();
+
+    if (snapshot) {
+      await ctx.db.patch(snapshot._id, {
+        status: "active",
+        ...(args.lastRenewalError !== undefined && {
+          lastRenewalError: args.lastRenewalError,
+        }),
+      });
+    }
+  },
+});
+
+/**
+ * Update snapshot after renewal (stores metadata from renew API)
  */
 export const updateSnapshotAfterRenewal = internalMutation({
   args: {
     playgroundId: v.string(),
     newSnapshotId: v.string(),
+    flavor: v.optional(v.union(v.literal("opencode"))),
+    setupVersion: v.optional(v.number()),
+    capabilities: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
@@ -251,7 +416,7 @@ export const updateSnapshotAfterRenewal = internalMutation({
       return;
     }
 
-    // Create new snapshot record
+    // Create new snapshot record with optional compatibility metadata
     await ctx.db.insert("snapshots", {
       playgroundId: args.playgroundId,
       snapshotId: args.newSnapshotId,
@@ -260,6 +425,11 @@ export const updateSnapshotAfterRenewal = internalMutation({
       status: "active",
       sourceOwner: oldSnapshot.sourceOwner,
       sourceRepo: oldSnapshot.sourceRepo,
+      ...(args.flavor !== undefined && { flavor: args.flavor }),
+      ...(args.setupVersion !== undefined && { setupVersion: args.setupVersion }),
+      ...(args.capabilities !== undefined && {
+        capabilities: args.capabilities,
+      }),
     });
   },
 });
@@ -284,7 +454,7 @@ export const checkAndRenewSnapshots = internalMutation({
       // Mark as renewing to prevent duplicate renewals
       await ctx.db.patch(snapshot._id, { status: "renewing" });
 
-      // Schedule the renewal action
+      // Schedule the renewal action (uses internal mutations for auth)
       await ctx.scheduler.runAfter(0, internalApi.snapshots.renewSnapshot, {
         playgroundId: snapshot.playgroundId,
         sourceOwner: snapshot.sourceOwner,
@@ -331,13 +501,18 @@ export const renewSnapshot = internalAction({
       });
 
       if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
+        const errorBody = await response.json().catch(() => ({}));
+        const errMsg =
+          typeof errorBody?.error === "string"
+            ? errorBody.error
+            : `HTTP ${response.status}`;
         console.error(
           `Failed to renew snapshot for ${args.playgroundId}:`,
-          error
+          errorBody
         );
-        await ctx.runMutation(internalApi.snapshots.revertSnapshotRenewingToActive, {
+        await ctx.runMutation(internalApi.snapshots.revertSnapshotRenewingToActiveInternal, {
           playgroundId: args.playgroundId,
+          lastRenewalError: errMsg,
         });
         await ctx.scheduler.runAfter(
           SNAPSHOT_RENEWAL_RETRY_MS,
@@ -355,11 +530,17 @@ export const renewSnapshot = internalAction({
       await ctx.runMutation(internalApi.snapshots.updateSnapshotAfterRenewal, {
         playgroundId: args.playgroundId,
         newSnapshotId: data.snapshotId,
+        flavor: data.flavor ?? undefined,
+        setupVersion: data.setupVersion ?? undefined,
+        capabilities: data.capabilities ?? undefined,
       });
     } catch (error) {
+      const errMsg =
+        error instanceof Error ? error.message : String(error);
       console.error(`Error renewing snapshot for ${args.playgroundId}:`, error);
-      await ctx.runMutation(internalApi.snapshots.revertSnapshotRenewingToActive, {
+      await ctx.runMutation(internalApi.snapshots.revertSnapshotRenewingToActiveInternal, {
         playgroundId: args.playgroundId,
+        lastRenewalError: errMsg,
       });
       await ctx.scheduler.runAfter(
         SNAPSHOT_RENEWAL_RETRY_MS,
