@@ -32,3 +32,10 @@ export const SNAPSHOT_RENEWAL_THRESHOLD_MS = 2 * 24 * 60 * 60 * 1000;
 
 // Retry failed snapshot renewal after 1 hour
 export const SNAPSHOT_RENEWAL_RETRY_MS = 60 * 60 * 1000;
+
+/**
+ * Snapshot setup version: bump when OpenCode install/config steps change.
+ * SINGLE SOURCE OF TRUTH - imported by renew route, sandbox-utils, and Convex queries.
+ * When you change OpenCode CLI version or config, increment this to invalidate old snapshots.
+ */
+export const OPENCODE_SNAPSHOT_SETUP_VERSION = 1;
