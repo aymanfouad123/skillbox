@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Github } from "lucide-react";
+import { Github, Download } from "lucide-react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { PLAYGROUNDS, Playground, CLIProvider } from "../data/skills";
@@ -51,8 +51,6 @@ export function SandboxPage({
     cliProvider: "claude";
   } | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-  // Track which sandbox the timer is for to prevent stale timer updates
-  const timerSandboxIdRef = useRef<string | null>(null);
   // Prevent duplicate queue fulfillment attempts
   const fulfillingQueueRef = useRef(false);
 
@@ -303,6 +301,37 @@ export function SandboxPage({
   ]);
 
   const [isExtending, setIsExtending] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+
+  const handleDownload = useCallback(async () => {
+    if (sandboxState.status !== "ready" || !("sandboxId" in sandboxState) || isDownloading) return;
+    setIsDownloading(true);
+    try {
+      const res = await fetch("/api/sandbox/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sandboxId: sandboxState.sandboxId,
+          userId,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error || "Download failed");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "sandbox-repo.tar.gz";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Download failed:", e);
+    } finally {
+      setIsDownloading(false);
+    }
+  }, [sandboxState, userId, isDownloading]);
 
   const handleKillSandbox = useCallback(async () => {
     if (isKilling) return;
@@ -351,49 +380,45 @@ export function SandboxPage({
     }
   }, [cancelQueueMutation, userId]);
 
-  // Session timer - countdown and auto-kill
+  const activeSandboxId =
+    sandboxState.status === "ready" ? sandboxState.sandboxId : null;
+  const activeSandboxExpiresAt =
+    sandboxState.status === "ready" ? sandboxState.expiresAt : null;
+
+  // Keep countdown value in sync with server expiration updates (e.g. extend)
   useEffect(() => {
-    if (sandboxState.status !== "ready") {
+    if (!activeSandboxExpiresAt) return;
+    const remaining = Math.max(
+      0,
+      Math.floor((activeSandboxExpiresAt - Date.now()) / 1000)
+    );
+    setTimeRemaining(remaining);
+  }, [activeSandboxExpiresAt]);
+
+  // Session timer interval lifecycle
+  useEffect(() => {
+    if (!activeSandboxId) {
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
-      timerSandboxIdRef.current = null;
+      setTimeRemaining(SESSION_DURATION_SECONDS);
       return;
     }
 
-    const currentSandboxId =
-      "sandboxId" in sandboxState ? sandboxState.sandboxId : null;
-
-    // If this is a different sandbox than what we're timing, reset the timer
-    if (currentSandboxId !== timerSandboxIdRef.current) {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-      timerSandboxIdRef.current = currentSandboxId;
-
-      // Calculate remaining time from expiresAt
-      if ("expiresAt" in sandboxState && sandboxState.expiresAt) {
-        const remaining = Math.max(
-          0,
-          Math.floor((sandboxState.expiresAt - Date.now()) / 1000)
-        );
-        setTimeRemaining(remaining);
-      } else {
-        setTimeRemaining(SESSION_DURATION_SECONDS);
-      }
-
-      timerRef.current = setInterval(() => {
-        setTimeRemaining((prev) => {
-          if (prev <= 1) {
-            handleKillSandbox();
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
     }
+    timerRef.current = setInterval(() => {
+      setTimeRemaining((prev) => {
+        if (prev <= 1) {
+          handleKillSandbox();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
 
     return () => {
       if (timerRef.current) {
@@ -401,7 +426,7 @@ export function SandboxPage({
         timerRef.current = null;
       }
     };
-  }, [sandboxState, handleKillSandbox]);
+  }, [activeSandboxId, handleKillSandbox]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -1012,7 +1037,7 @@ export function SandboxPage({
                 >
                   {formatTime(timeRemaining)}
                 </span>
-                {/* Preview button - only shown if dev server is ready */}
+                {/* Preview - only shown if dev server is ready */}
                 {"previewUrl" in sandboxState && sandboxState.previewUrl && (
                   <a
                     href={sandboxState.previewUrl}
@@ -1023,6 +1048,16 @@ export function SandboxPage({
                     Preview
                   </a>
                 )}
+                {/* Download sandbox workspace as tarball */}
+                <button
+                  type="button"
+                  onClick={handleDownload}
+                  disabled={isDownloading}
+                  className="text-xs px-3 py-1 border border-white/30 text-gray-300 hover:bg-white/10 hover:text-white inline-flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  {isDownloading ? "Preparing…" : "Download"}
+                </button>
                 {/* Extend button - only shown if not already extended and time is low */}
                 {!sandboxState.hasExtendedTimeout && timeRemaining <= 120 && (
                   <button
