@@ -38,7 +38,8 @@ export function SkillsCarousel({ onBoot }: SkillsCarouselProps) {
         <h2 className="text-sm tracking-widest text-orange-400/80 uppercase">
           Top Skills
         </h2>
-        <div className="flex items-center gap-2">
+        {/* Navigation arrows - hidden on mobile (vertical scroll) */}
+        <div className="hidden sm:flex items-center gap-2">
           <button
             onClick={goBack}
             disabled={!canGoBack}
@@ -56,7 +57,17 @@ export function SkillsCarousel({ onBoot }: SkillsCarouselProps) {
         </div>
       </div>
 
-      <div className="overflow-hidden">
+      {/* Mobile: vertical scrollable list */}
+      <div className="flex flex-col gap-4 sm:hidden max-h-[50vh] overflow-y-auto pr-1">
+        {TOP_SKILLS.map((skill) => (
+          <div key={skill.rank} className="w-full">
+            <SkillCard skill={skill} onBoot={onBoot} />
+          </div>
+        ))}
+      </div>
+
+      {/* Desktop: horizontal carousel */}
+      <div className="hidden sm:block overflow-hidden">
         <div
           className="flex gap-4 transition-transform duration-300 ease-out"
           style={{ transform: `translateX(${translateX}px)` }}
