@@ -77,21 +77,23 @@ export default function Home() {
                 }
               `}
             >
-              <span
-                className={`mr-2 transition-colors ${
-                  isBooting ? "text-accent" : "text-white/40"
-                }`}
-              >
-                $
-              </span>
-              <input
-                ref={inputRef}
-                value={searchValue}
-                onChange={(e) => setSearchValue(e.target.value)}
-                className="bg-transparent outline-none w-full max-w-lg text-lg"
-                placeholder="remotion-dev/skills/remotion-best-practices"
-                autoFocus
-              />
+              <div className="flex items-center min-w-0">
+                <span
+                  className={`mr-2 shrink-0 transition-colors ${
+                    isBooting ? "text-accent" : "text-white/40"
+                  }`}
+                >
+                  $
+                </span>
+                <input
+                  ref={inputRef}
+                  value={searchValue}
+                  onChange={(e) => setSearchValue(e.target.value)}
+                  className="bg-transparent outline-none flex-1 min-w-0 max-w-lg text-lg"
+                  placeholder="remotion-dev/skills/remotion-best-practices"
+                  autoFocus
+                />
+              </div>
               <div
                 className={`
                   absolute right-4 top-1/2 -translate-y-1/2 text-[10px] tracking-wider transition-all
