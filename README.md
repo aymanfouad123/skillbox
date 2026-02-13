@@ -35,6 +35,7 @@ this runs next.js and convex dev in parallel. then open the app in your browser.
 **next.js (and vercel)**
 
 - `NEXT_PUBLIC_CONVEX_URL` – convex deployment URL (from convex dashboard or `npx convex env get NEXT_PUBLIC_CONVEX_URL`).
+- `NEXT_PUBLIC_CONVEX_SITE_URL` – convex HTTP actions site URL (e.g. `https://your-deployment.convex.site`). required for preview functionality. get this from the convex dashboard under your deployment's site URL, or from `npx convex env get NEXT_PUBLIC_CONVEX_SITE_URL`.
 - `NEXT_PUBLIC_APP_URL` – public URL of your app (e.g. `https://skillbox.vercel.app`). used by convex to call the sandbox internal API.
 - `CONVEX_INTERNAL_SECRET` – shared secret so only convex can call `/api/sandbox/internal`. generate a random string and set it in both convex env and next.js/vercel env.
 - optional: `ALLOW_INTERNAL_BYPASS=true` or `SKILLBOX_ALLOW_INTERNAL_BYPASS=true` – bypass internal secret check (dev only; do not use in production).
@@ -56,5 +57,5 @@ this runs next.js and convex dev in parallel. then open the app in your browser.
 ## deploy
 
 1. deploy the next.js app (e.g. vercel) and convex (e.g. `npx convex deploy`).
-2. set `NEXT_PUBLIC_APP_URL` to the production URL and ensure `CONVEX_INTERNAL_SECRET` and `NEXT_PUBLIC_CONVEX_URL` are set in both environments.
+2. set `NEXT_PUBLIC_APP_URL` to the production URL and ensure `CONVEX_INTERNAL_SECRET`, `NEXT_PUBLIC_CONVEX_URL`, and `NEXT_PUBLIC_CONVEX_SITE_URL` are set in both environments.
 3. configure the vercel project so the sandbox API can create sandboxes (vcpus, timeout, ports as in the code).

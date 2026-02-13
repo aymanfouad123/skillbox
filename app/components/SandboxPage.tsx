@@ -1026,13 +1026,13 @@ export function SandboxPage({
 
         {sandboxState.status === "ready" && "ttydUrl" in sandboxState && (
           <div className="pb-8">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-gray-500">
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 mb-2">
+              <span className="text-xs text-gray-500 shrink-0 min-w-0 max-w-full truncate">
                 Sandbox ID: {sandboxState.sandboxId}
               </span>
-              <div className="flex items-center gap-4">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-4 min-w-0">
                 <span
-                  className={`text-xs font-mono ${
+                  className={`text-xs font-mono shrink-0 whitespace-nowrap ${
                     timeRemaining <= 30 ? "text-red-500" : "text-orange-400"
                   }`}
                 >
@@ -1045,12 +1045,12 @@ export function SandboxPage({
                       href={sandboxState.previewUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-xs px-3 py-1 border border-blue-500/50 text-blue-500 hover:bg-blue-500 hover:text-black"
+                      className="text-xs px-2 sm:px-3 py-1.5 sm:py-1 min-h-[28px] sm:min-h-0 inline-flex items-center justify-center border border-blue-500/50 text-blue-500 hover:bg-blue-500 hover:text-black shrink-0 whitespace-nowrap"
                     >
                       Preview
                     </a>
                   ) : (
-                    <span className="text-xs px-3 py-1 border border-white/20 text-gray-500">
+                    <span className="text-xs px-2 sm:px-3 py-1.5 sm:py-1 min-h-[28px] sm:min-h-0 inline-flex items-center border border-white/20 text-gray-500 shrink-0 whitespace-nowrap">
                       Preview booting…
                     </span>
                   )
@@ -1060,9 +1060,9 @@ export function SandboxPage({
                   type="button"
                   onClick={handleDownload}
                   disabled={isDownloading}
-                  className="text-xs px-3 py-1 border border-white/30 text-gray-300 hover:bg-white/10 hover:text-white inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                  className="text-xs px-2 sm:px-3 py-1.5 sm:py-1 min-h-[28px] sm:min-h-0 border border-white/30 text-gray-300 hover:bg-white/10 hover:text-white inline-flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
                 >
-                  <Download className="w-3.5 h-3.5" />
+                  <Download className="w-3.5 h-3.5 shrink-0" />
                   {isDownloading ? "Preparing…" : "Download"}
                 </button>
                 {/* Extend button - only shown if not already extended and time is low */}
@@ -1070,10 +1070,10 @@ export function SandboxPage({
                   <button
                     onClick={handleExtendTimeout}
                     disabled={isExtending}
-                    className={`text-xs px-3 py-1 border ${
+                    className={`text-xs px-2 sm:px-3 py-1.5 sm:py-1 min-h-[28px] sm:min-h-0 border shrink-0 whitespace-nowrap inline-flex items-center justify-center ${
                       isExtending
                         ? "border-gray-600 text-gray-600 cursor-not-allowed"
-                        : "border-green-500/50 text-green-500 hover:bg-green-500 hover:text-black"
+                        : "border-green-500/50 text-green-500 hover:bg-green-500 hover:text-black cursor-pointer"
                     }`}
                   >
                     {isExtending ? "Extending..." : "+2 min"}
@@ -1082,7 +1082,7 @@ export function SandboxPage({
                 <button
                   onClick={handleKillSandbox}
                   disabled={isKilling}
-                  className={`text-xs px-3 py-1 border ${
+                  className={`text-xs px-2 sm:px-3 py-1.5 sm:py-1 min-h-[28px] sm:min-h-0 border shrink-0 whitespace-nowrap inline-flex items-center justify-center ${
                     isKilling
                       ? "border-gray-600 text-gray-600 cursor-not-allowed"
                       : "border-red-500/50 text-red-500 hover:bg-red-500 hover:text-black cursor-pointer"
@@ -1095,12 +1095,7 @@ export function SandboxPage({
             <div className="border border-white/20 rounded overflow-hidden">
               <iframe
                 src={sandboxState.ttydUrl}
-                className="w-full bg-black"
-                style={{
-                  height: "calc(100vh - 200px)",
-                  minHeight: "500px",
-                  maxHeight: "800px",
-                }}
+                className="w-full bg-black h-[calc(100dvh-200px)] min-h-[400px] sm:min-h-[500px] max-h-[800px]"
                 title="Sandbox Terminal"
                 allow="clipboard-read; clipboard-write"
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
