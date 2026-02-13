@@ -238,36 +238,60 @@ export function getDevServerConfig(
   switch (projectType) {
     case "node": {
       return (async () => {
-        const pnpmLock = await sandbox.readFileToBuffer({ path: "/vercel/sandbox/pnpm-lock.yaml" });
+        const pnpmLock = await sandbox.readFileToBuffer({
+          path: "/vercel/sandbox/pnpm-lock.yaml",
+        });
         if (pnpmLock != null) {
-          return { port: 3000, command: "pnpm install --frozen-lockfile && pnpm run dev", label: "Node (pnpm)" };
+          return {
+            port: 3000,
+            command: "pnpm install --frozen-lockfile && pnpm run dev",
+            label: "Node (pnpm)",
+          };
         }
-        const yarnLock = await sandbox.readFileToBuffer({ path: "/vercel/sandbox/yarn.lock" });
+        const yarnLock = await sandbox.readFileToBuffer({
+          path: "/vercel/sandbox/yarn.lock",
+        });
         if (yarnLock != null) {
-          return { port: 3000, command: "yarn install --frozen-lockfile && yarn dev", label: "Node (yarn)" };
+          return {
+            port: 3000,
+            command: "yarn install --frozen-lockfile && yarn dev",
+            label: "Node (yarn)",
+          };
         }
-        return { port: 3000, command: "npm install --no-audit --no-fund && npm run dev", label: "Node (npm)" };
+        return {
+          port: 3000,
+          command: "npm install --no-audit --no-fund && npm run dev",
+          label: "Node (npm)",
+        };
       })();
     }
     case "python": {
       return (async () => {
-        const reqFile = await sandbox.readFileToBuffer({ path: "/vercel/sandbox/requirements.txt" });
+        const reqFile = await sandbox.readFileToBuffer({
+          path: "/vercel/sandbox/requirements.txt",
+        });
         const reqContent = reqFile?.toString() ?? "";
         if (/flask/i.test(reqContent)) {
           return {
             port: 3000,
-            command: "pip install -q -r requirements.txt && flask run --host=0.0.0.0 --port 3000",
+            command:
+              "pip install -q -r requirements.txt && flask run --host=0.0.0.0 --port 3000",
             label: "Flask",
           };
         }
         if (reqContent.includes("uvicorn")) {
           return {
             port: 3000,
-            command: "pip install -q -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 3000",
+            command:
+              "pip install -q -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 3000",
             label: "FastAPI",
           };
         }
-        return { port: 3000, command: "python3 -m http.server 3000", label: "Python" };
+        return {
+          port: 3000,
+          command: "python3 -m http.server 3000",
+          label: "Python",
+        };
       })();
     }
     case "go":
@@ -404,7 +428,9 @@ export function warmSandboxServicesInBackground(
       console.log(`${logPrefix}TTYD and preview are ready.`);
     }
     if (devReady && sandboxId && !siteUrl) {
-      console.warn(`${logPrefix}NEXT_PUBLIC_CONVEX_SITE_URL not set, skipping mark-preview-ready.`);
+      console.warn(
+        `${logPrefix}NEXT_PUBLIC_CONVEX_SITE_URL not set, skipping mark-preview-ready.`,
+      );
     }
     if (devReady && sandboxId && siteUrl && secret) {
       try {
@@ -604,12 +630,17 @@ export async function triggerSnapshotRenewal(
     const { api } = await import("../../convex/_generated/api");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { renewing } = await client.query((api.snapshots as any).isSnapshotRenewing, {
-      playgroundId,
-    });
+    const { renewing } = await client.query(
+      (api.snapshots as any).isSnapshotRenewing,
+      {
+        playgroundId,
+      },
+    );
 
     if (renewing) {
-      console.log(`[triggerSnapshotRenewal] ${playgroundId} already renewing, skipping duplicate`);
+      console.log(
+        `[triggerSnapshotRenewal] ${playgroundId} already renewing, skipping duplicate`,
+      );
       return;
     }
 
@@ -620,7 +651,9 @@ export async function triggerSnapshotRenewal(
     });
 
     // Start renewal
-    console.log(`[triggerSnapshotRenewal] Starting renewal for ${playgroundId}...`);
+    console.log(
+      `[triggerSnapshotRenewal] Starting renewal for ${playgroundId}...`,
+    );
     const response = await fetch(`${baseUrl}/api/snapshots/renew`, {
       method: "POST",
       headers: {
@@ -644,16 +677,19 @@ export async function triggerSnapshotRenewal(
 
       // Revert to active on failure
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await client.mutation((api.snapshots as any).revertSnapshotRenewingToActive, {
-        playgroundId,
-        lastRenewalError: errMsg,
-      });
+      await client.mutation(
+        (api.snapshots as any).revertSnapshotRenewingToActive,
+        {
+          playgroundId,
+          lastRenewalError: errMsg,
+        },
+      );
       return;
     }
 
     const data = await response.json();
     console.log(
-      `[triggerSnapshotRenewal] ${playgroundId} renewed: ${data.snapshotId}`
+      `[triggerSnapshotRenewal] ${playgroundId} renewed: ${data.snapshotId}`,
     );
 
     // Register the new snapshot
