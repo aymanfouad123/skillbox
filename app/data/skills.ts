@@ -83,8 +83,6 @@ export interface Playground {
   owner: string;
   repo: string;
   description: string;
-  /** For one-time seeding only; sandbox boot uses Convex snapshots table as source of truth. */
-  snapshotId?: string;
 }
 
 // Available playgrounds (Vercel repos)
@@ -95,7 +93,6 @@ export const PLAYGROUNDS: Playground[] = [
     owner: "vercel",
     repo: "commerce",
     description: "Next.js e-commerce template",
-    snapshotId: "snap_MSM5TBMfON2YDAAlhQAsPVzwxoZQ",
   },
   {
     id: "chat",
@@ -103,7 +100,6 @@ export const PLAYGROUNDS: Playground[] = [
     owner: "vercel",
     repo: "ai-chatbot",
     description: "AI SDK chatbot starter",
-    snapshotId: "snap_VIHxRqZ1BSDvqnDng3Vxx1WiDbuC",
   },
   {
     id: "new-nextjs",
@@ -111,7 +107,6 @@ export const PLAYGROUNDS: Playground[] = [
     owner: "create",
     repo: "nextjs",
     description: "Clean Next.js starter with Tailwind CSS",
-    snapshotId: "snap_O7CKp1m8HYW9iXF6WV5vSB6jOENT",
   },
 ];
 

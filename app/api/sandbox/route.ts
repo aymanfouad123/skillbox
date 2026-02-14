@@ -125,11 +125,12 @@ export async function POST(request: Request) {
       });
     sandbox = createdSandbox;
 
-    if (snapshotId && !snapshotUsed && playground) {
-      // Fire-and-forget: don't block sandbox boot on renewal
-      triggerSnapshotRenewal(playground.id, playground.owner, playground.repo).catch(
+    if (playground && (!snapshotId || !snapshotUsed)) {
+      // No snapshot existed or snapshot boot failed — create one for next time
+      const renewalPromise = triggerSnapshotRenewal(playground.id, playground.owner, playground.repo).catch(
         (err) => console.warn("[Sandbox] Renewal trigger failed:", err)
       );
+      after(renewalPromise);
     }
 
     const skipOpencodeInstall =

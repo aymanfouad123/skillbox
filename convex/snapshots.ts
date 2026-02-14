@@ -10,34 +10,11 @@ import {
   SNAPSHOT_EXPIRATION_MS,
   SNAPSHOT_RENEWAL_THRESHOLD_MS,
   SNAPSHOT_RENEWAL_RETRY_MS,
-  OPENCODE_SNAPSHOT_SETUP_VERSION,
 } from "./constants";
 
 // Type assertion for internal API (types regenerated on `npx convex dev`)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const internalApi = internal as any;
-
-// Initial snapshots from skills.ts - used to seed the database
-const INITIAL_SNAPSHOTS = [
-  {
-    playgroundId: "commerce",
-    snapshotId: "snap_MSM5TBMfON2YDAAlhQAsPVzwxoZQ",
-    sourceOwner: "vercel",
-    sourceRepo: "commerce",
-  },
-  {
-    playgroundId: "chat",
-    snapshotId: "snap_VIHxRqZ1BSDvqnDng3Vxx1WiDbuC",
-    sourceOwner: "vercel",
-    sourceRepo: "ai-chatbot",
-  },
-  {
-    playgroundId: "new-nextjs",
-    snapshotId: "snap_O7CKp1m8HYW9iXF6WV5vSB6jOENT",
-    sourceOwner: "create",
-    sourceRepo: "nextjs",
-  },
-];
 
 // =============================================================================
 // Queries
@@ -240,44 +217,6 @@ export const isSnapshotRenewing = query({
       .first();
 
     return { renewing: !!snapshot };
-  },
-});
-
-/**
- * Seed initial snapshots from hardcoded values
- * Call this once to initialize the database with existing snapshots
- */
-export const seedInitialSnapshots = mutation({
-  args: {},
-  handler: async (ctx) => {
-    const now = Date.now();
-    let seeded = 0;
-
-    for (const snapshot of INITIAL_SNAPSHOTS) {
-      // Check if already exists
-      const existing = await ctx.db
-        .query("snapshots")
-        .withIndex("by_playgroundId", (q) =>
-          q.eq("playgroundId", snapshot.playgroundId)
-        )
-        .first();
-
-      if (!existing) {
-        await ctx.db.insert("snapshots", {
-          playgroundId: snapshot.playgroundId,
-          snapshotId: snapshot.snapshotId,
-          createdAt: now,
-          // Set expiration to 5 days from now (gives time before renewal needed)
-          expiresAt: now + 5 * 24 * 60 * 60 * 1000,
-          status: "active",
-          sourceOwner: snapshot.sourceOwner,
-          sourceRepo: snapshot.sourceRepo,
-        });
-        seeded++;
-      }
-    }
-
-    return { success: true, seeded };
   },
 });
 
