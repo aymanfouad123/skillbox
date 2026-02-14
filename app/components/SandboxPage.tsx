@@ -1065,7 +1065,7 @@ export function SandboxPage({
                   type="button"
                   onClick={handleDownload}
                   disabled={isDownloading}
-                  className="text-xs px-2 sm:px-3 py-1.5 sm:py-1 min-h-[28px] sm:min-h-0 border border-white/30 text-gray-300 hover:bg-white/10 hover:text-white inline-flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
+                  className="text-xs px-2 sm:px-3 py-1.5 sm:py-1 min-h-[28px] sm:min-h-0 border border-green-500/50 text-green-500 hover:bg-green-500 hover:text-black inline-flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
                 >
                   <Download className="w-3.5 h-3.5 shrink-0" />
                   {isDownloading ? "Preparing…" : "Download"}
