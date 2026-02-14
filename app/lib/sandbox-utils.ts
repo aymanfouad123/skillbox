@@ -407,13 +407,13 @@ export function warmSandboxServicesInBackground(
   sandbox: Sandbox,
   devPort: number,
   options: WarmSandboxOptions = {},
-): void {
+): Promise<void> {
   const logPrefix = options.logPrefix ?? "";
   const sandboxId = options.sandboxId;
   const siteUrl = process.env.NEXT_PUBLIC_CONVEX_SITE_URL;
   const secret = process.env.CONVEX_INTERNAL_SECRET;
 
-  void (async () => {
+  return (async () => {
     const [devReady, ttydReady] = await Promise.all([
       waitForDevServer(sandbox, devPort),
       waitForTTYD(sandbox),

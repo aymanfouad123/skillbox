@@ -1,5 +1,6 @@
 import { Sandbox } from "@vercel/sandbox";
 import { NextResponse } from "next/server";
+import { after } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../convex/_generated/api";
 import { CreateSandboxRequest } from "../../data/skills";
@@ -160,9 +161,10 @@ export async function POST(request: Request) {
 
     // 8. Start dev server (detects project type: Node, Python, Go, Java)
     const devPort = await startDevServer(sandbox);
-    warmSandboxServicesInBackground(sandbox, devPort, {
+    const warmUpPromise = warmSandboxServicesInBackground(sandbox, devPort, {
       sandboxId: sandbox.sandboxId,
     });
+    after(warmUpPromise);
 
     const ttydUrl = sandbox.domain(7681);
     // Expose preview URL immediately; readiness probes run in background.
