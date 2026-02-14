@@ -308,7 +308,7 @@ export async function DELETE(request: Request) {
       }
 
       await sandbox.stop();
-      console.log(`[Internal] Sandbox stopped: ${sandboxId}`);
+      console.log(`[Session ended] Sandbox stopped: ${sandboxId}`);
     } catch (sandboxError) {
       const errorMessage = sandboxError instanceof Error ? sandboxError.message : String(sandboxError);
       console.error(`[Internal] Sandbox.get/stop error for ${sandboxId}:`, errorMessage);

@@ -404,6 +404,8 @@ export const stopSandbox = mutation({
       archivedAt: Date.now(),
     });
 
+    console.log(`[Session ended] User kill: ${sandbox.sandboxId} (userId: ${args.userId})`);
+
     // Schedule actual Vercel sandbox stop
     await ctx.scheduler.runAfter(0, internal.sandboxes.stopVercelSandbox, {
       sandboxId: sandbox.sandboxId,
@@ -611,6 +613,7 @@ export const cleanupExpiredSandboxes = internalMutation({
       .collect();
 
     for (const sandbox of expired) {
+      console.log(`[Session ended] Expired: ${sandbox.sandboxId} (userId: ${sandbox.userId})`);
       // Archive
       await ctx.db.patch(sandbox._id, {
         status: "archived",
@@ -623,6 +626,9 @@ export const cleanupExpiredSandboxes = internalMutation({
       });
     }
 
+    if (expired.length > 0) {
+      console.log(`[Session ended] Cleanup: ${expired.length} expired sandbox(es)`);
+    }
     return { expiredCount: expired.length };
   },
 });

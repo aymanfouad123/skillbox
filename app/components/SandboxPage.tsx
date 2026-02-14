@@ -41,6 +41,7 @@ export function SandboxPage({
   const [apiKey, setApiKey] = useState("");
   const [rememberApiKey, setRememberApiKey] = useState(false);
   const [isBooting, setIsBooting] = useState(false);
+  const [bootSteps, setBootSteps] = useState<{ label: string; status: "active" | "done" }[]>([]);
   const [isKilling, setIsKilling] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(SESSION_DURATION_SECONDS);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -495,7 +496,8 @@ export function SandboxPage({
         return;
       }
 
-      // Step 1: Create sandbox via API first
+      // Step 1: Create sandbox via streaming API
+      setBootSteps([]);
       const response = await fetch("/api/sandbox", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -517,7 +519,52 @@ export function SandboxPage({
         throw new Error(error.error || "Failed to create sandbox");
       }
 
-      const data = await response.json();
+      // Read NDJSON stream for progress events
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+
+          if (event.error) {
+            throw new Error(event.error);
+          }
+          if (event.done) {
+            data = event;
+            continue;
+          }
+          // Progress event
+          if (event.step) {
+            if (event.status === "done") {
+              setBootSteps((prev) =>
+                prev.map((s) =>
+                  s.label === event.step ? { ...s, status: "done" } : s
+                )
+              );
+            } else {
+              setBootSteps((prev) => [
+                ...prev,
+                { label: event.step, status: "active" },
+              ]);
+            }
+          }
+        }
+      }
+
+      if (!data) {
+        throw new Error("Stream ended without result");
+      }
 
       // Step 2: Register in Convex with complete data including Vercel timing
       const registerResult = await registerSandboxMutation({
@@ -557,6 +604,7 @@ export function SandboxPage({
       );
     } finally {
       setIsBooting(false);
+      setBootSteps([]);
     }
   };
 
@@ -1013,19 +1061,30 @@ export function SandboxPage({
           </div>
         )}
 
-        {/* Creating state - shown during API call */}
+        {/* Creating state - shown during API call with live boot log */}
         {isBooting && (
-          <div className="border border-orange-500/50 p-8 text-center">
-            <div className="text-orange-500 text-xl mb-4 animate-pulse">
+          <div className="border border-orange-500/50 p-6">
+            <div className="text-orange-500 text-sm mb-4 animate-pulse">
               ◐ Creating Sandbox...
             </div>
-            <p className="text-gray-500 text-sm">
-              Cloning repository, installing dependencies, and starting
-              terminal...
-            </p>
-            <div className="mt-4 text-xs text-gray-600">
-              This may take 30-60 seconds
-            </div>
+            {bootSteps.length > 0 ? (
+              <div className="font-mono text-sm space-y-1.5">
+                {bootSteps.map((step, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    {step.status === "done" ? (
+                      <span className="text-green-500 w-4 text-center shrink-0">✓</span>
+                    ) : (
+                      <span className="text-orange-500 w-4 text-center shrink-0 animate-spin">◑</span>
+                    )}
+                    <span className={step.status === "done" ? "text-gray-500" : "text-orange-400"}>
+                      {step.label}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-gray-500 text-sm">Connecting...</p>
+            )}
           </div>
         )}
 
