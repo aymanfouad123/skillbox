@@ -1,5 +1,5 @@
 import { Sandbox } from "@vercel/sandbox";
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import crypto from "node:crypto";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../convex/_generated/api";
@@ -192,11 +192,12 @@ export async function POST(request: Request) {
       });
     sandbox = createdSandbox;
 
-    if (snapshotId && !snapshotUsed && playground) {
-      // Fire-and-forget: don't block sandbox boot on renewal
-      triggerSnapshotRenewal(playground.id, playground.owner, playground.repo).catch(
+    if (playground && (!snapshotId || !snapshotUsed)) {
+      // No snapshot existed or snapshot boot failed — create one for next time
+      const renewalPromise = triggerSnapshotRenewal(playground.id, playground.owner, playground.repo).catch(
         (err) => console.warn("[Internal] Renewal trigger failed:", err)
       );
+      after(renewalPromise);
     }
 
     const skipOpencodeInstall =
@@ -228,10 +229,11 @@ export async function POST(request: Request) {
 
     // 8. Start dev server (detects project type)
     const devPort = await startDevServer(sandbox);
-    warmSandboxServicesInBackground(sandbox, devPort, {
+    const warmUpPromise = warmSandboxServicesInBackground(sandbox, devPort, {
       logPrefix: "[Internal] ",
       sandboxId: sandbox.sandboxId,
     });
+    after(warmUpPromise);
 
     const ttydUrl = sandbox.domain(7681);
     // Expose preview URL immediately; readiness probes run in background.
@@ -306,7 +308,7 @@ export async function DELETE(request: Request) {
       }
 
       await sandbox.stop();
-      console.log(`[Internal] Sandbox stopped: ${sandboxId}`);
+      console.log(`[Session ended] Sandbox stopped: ${sandboxId}`);
     } catch (sandboxError) {
       const errorMessage = sandboxError instanceof Error ? sandboxError.message : String(sandboxError);
       console.error(`[Internal] Sandbox.get/stop error for ${sandboxId}:`, errorMessage);

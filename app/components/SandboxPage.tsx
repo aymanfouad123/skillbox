@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Github, Download } from "lucide-react";
+import { Github, Download, Loader2, Check } from "lucide-react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { PLAYGROUNDS, Playground, CLIProvider } from "../data/skills";
@@ -41,6 +41,9 @@ export function SandboxPage({
   const [apiKey, setApiKey] = useState("");
   const [rememberApiKey, setRememberApiKey] = useState(false);
   const [isBooting, setIsBooting] = useState(false);
+  const [bootSteps, setBootSteps] = useState<
+    { label: string; status: "active" | "done" }[]
+  >([]);
   const [isKilling, setIsKilling] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(SESSION_DURATION_SECONDS);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -495,7 +498,8 @@ export function SandboxPage({
         return;
       }
 
-      // Step 1: Create sandbox via API first
+      // Step 1: Create sandbox via streaming API
+      setBootSteps([]);
       const response = await fetch("/api/sandbox", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -517,7 +521,52 @@ export function SandboxPage({
         throw new Error(error.error || "Failed to create sandbox");
       }
 
-      const data = await response.json();
+      // Read NDJSON stream for progress events
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+
+          if (event.error) {
+            throw new Error(event.error);
+          }
+          if (event.done) {
+            data = event;
+            continue;
+          }
+          // Progress event
+          if (event.step) {
+            if (event.status === "done") {
+              setBootSteps((prev) =>
+                prev.map((s) =>
+                  s.label === event.step ? { ...s, status: "done" } : s,
+                ),
+              );
+            } else {
+              setBootSteps((prev) => [
+                ...prev,
+                { label: event.step, status: "active" },
+              ]);
+            }
+          }
+        }
+      }
+
+      if (!data) {
+        throw new Error("Stream ended without result");
+      }
 
       // Step 2: Register in Convex with complete data including Vercel timing
       const registerResult = await registerSandboxMutation({
@@ -557,6 +606,7 @@ export function SandboxPage({
       );
     } finally {
       setIsBooting(false);
+      setBootSteps([]);
     }
   };
 
@@ -1000,8 +1050,11 @@ export function SandboxPage({
         {/* Queue fulfillment - shown when creating sandbox from queue (Claude BYOK) */}
         {isFulfillingQueue && (
           <div className="border border-orange-500/50 p-8 text-center">
-            <div className="text-orange-500 text-xl mb-4 animate-pulse">
-              ◐ Your Turn - Creating Sandbox...
+            <div className="text-orange-500 text-xl mb-4 flex items-center justify-center gap-2">
+              <span className="inline-block text-lg animate-pulse align-middle">
+                ◐
+              </span>{" "}
+              Creating Sandbox...
             </div>
             <p className="text-gray-500 text-sm">
               Cloning repository, installing dependencies, and starting terminal
@@ -1013,19 +1066,37 @@ export function SandboxPage({
           </div>
         )}
 
-        {/* Creating state - shown during API call */}
+        {/* Creating state - shown during API call with live boot log */}
         {isBooting && (
-          <div className="border border-orange-500/50 p-8 text-center">
-            <div className="text-orange-500 text-xl mb-4 animate-pulse">
-              ◐ Creating Sandbox...
+          <div className="border border-orange-500/50 p-6">
+            <div className="flex items-center gap-2 text-orange-500 text-sm mb-4">
+              <span className="inline-block text-lg animate-pulse leading-none">◐</span>
+              <span>Creating Sandbox...</span>
             </div>
-            <p className="text-gray-500 text-sm">
-              Cloning repository, installing dependencies, and starting
-              terminal...
-            </p>
-            <div className="mt-4 text-xs text-gray-600">
-              This may take 30-60 seconds
-            </div>
+            {bootSteps.length > 0 ? (
+              <div className="font-mono text-sm space-y-1.5">
+                {bootSteps.map((step, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    {step.status === "done" ? (
+                      <Check className="w-4 h-4 text-green-500 shrink-0" />
+                    ) : (
+                      <Loader2 className="w-4 h-4 text-orange-500 shrink-0 animate-spin" />
+                    )}
+                    <span
+                      className={
+                        step.status === "done"
+                          ? "text-gray-500"
+                          : "text-orange-400"
+                      }
+                    >
+                      {step.label}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-gray-500 text-sm">Connecting...</p>
+            )}
           </div>
         )}
 
@@ -1065,7 +1136,7 @@ export function SandboxPage({
                   type="button"
                   onClick={handleDownload}
                   disabled={isDownloading}
-                  className="text-xs px-2 sm:px-3 py-1.5 sm:py-1 min-h-[28px] sm:min-h-0 border border-white/30 text-gray-300 hover:bg-white/10 hover:text-white inline-flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
+                  className="text-xs px-2 sm:px-3 py-1.5 sm:py-1 min-h-[28px] sm:min-h-0 border border-green-500/50 text-green-500 hover:bg-green-500 hover:text-black inline-flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed shrink-0 whitespace-nowrap"
                 >
                   <Download className="w-3.5 h-3.5 shrink-0" />
                   {isDownloading ? "Preparing…" : "Download"}
