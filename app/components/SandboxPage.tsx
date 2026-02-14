@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Github, Download } from "lucide-react";
+import { Github, Download, Loader2, Check } from "lucide-react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { PLAYGROUNDS, Playground, CLIProvider } from "../data/skills";
@@ -41,7 +41,9 @@ export function SandboxPage({
   const [apiKey, setApiKey] = useState("");
   const [rememberApiKey, setRememberApiKey] = useState(false);
   const [isBooting, setIsBooting] = useState(false);
-  const [bootSteps, setBootSteps] = useState<{ label: string; status: "active" | "done" }[]>([]);
+  const [bootSteps, setBootSteps] = useState<
+    { label: string; status: "active" | "done" }[]
+  >([]);
   const [isKilling, setIsKilling] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(SESSION_DURATION_SECONDS);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -549,8 +551,8 @@ export function SandboxPage({
             if (event.status === "done") {
               setBootSteps((prev) =>
                 prev.map((s) =>
-                  s.label === event.step ? { ...s, status: "done" } : s
-                )
+                  s.label === event.step ? { ...s, status: "done" } : s,
+                ),
               );
             } else {
               setBootSteps((prev) => [
@@ -1048,8 +1050,11 @@ export function SandboxPage({
         {/* Queue fulfillment - shown when creating sandbox from queue (Claude BYOK) */}
         {isFulfillingQueue && (
           <div className="border border-orange-500/50 p-8 text-center">
-            <div className="text-orange-500 text-xl mb-4 animate-pulse">
-              ◐ Your Turn - Creating Sandbox...
+            <div className="text-orange-500 text-xl mb-4 flex items-center justify-center gap-2">
+              <span className="inline-block text-lg animate-pulse align-middle">
+                ◐
+              </span>{" "}
+              Creating Sandbox...
             </div>
             <p className="text-gray-500 text-sm">
               Cloning repository, installing dependencies, and starting terminal
@@ -1064,19 +1069,26 @@ export function SandboxPage({
         {/* Creating state - shown during API call with live boot log */}
         {isBooting && (
           <div className="border border-orange-500/50 p-6">
-            <div className="text-orange-500 text-sm mb-4 animate-pulse">
-              ◐ Creating Sandbox...
+            <div className="flex items-center gap-2 text-orange-500 text-sm mb-4">
+              <span className="inline-block text-lg animate-pulse leading-none">◐</span>
+              <span>Creating Sandbox...</span>
             </div>
             {bootSteps.length > 0 ? (
               <div className="font-mono text-sm space-y-1.5">
                 {bootSteps.map((step, i) => (
                   <div key={i} className="flex items-center gap-2">
                     {step.status === "done" ? (
-                      <span className="text-green-500 w-4 text-center shrink-0">✓</span>
+                      <Check className="w-4 h-4 text-green-500 shrink-0" />
                     ) : (
-                      <span className="text-orange-500 w-4 text-center shrink-0 animate-spin">◑</span>
+                      <Loader2 className="w-4 h-4 text-orange-500 shrink-0 animate-spin" />
                     )}
-                    <span className={step.status === "done" ? "text-gray-500" : "text-orange-400"}>
+                    <span
+                      className={
+                        step.status === "done"
+                          ? "text-gray-500"
+                          : "text-orange-400"
+                      }
+                    >
                       {step.label}
                     </span>
                   </div>
