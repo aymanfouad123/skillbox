@@ -15,7 +15,7 @@ import {
   createSandboxWithSnapshotOrGit,
   resolvePlayground,
   OPENCODE_SNAPSHOT_SETUP_VERSION,
-  triggerSnapshotRenewal,
+  // triggerSnapshotRenewal, // disabled: low traffic, renewal bursts waste Vercel resources
 } from "../../../lib/sandbox-utils";
 
 // Lazy Convex client - only init when URL is set to avoid crash on missing env
@@ -192,13 +192,13 @@ export async function POST(request: Request) {
       });
     sandbox = createdSandbox;
 
-    if (playground && (!snapshotId || !snapshotUsed)) {
-      // No snapshot existed or snapshot boot failed — create one for next time
-      const renewalPromise = triggerSnapshotRenewal(playground.id, playground.owner, playground.repo).catch(
-        (err) => console.warn("[Internal] Renewal trigger failed:", err)
-      );
-      after(renewalPromise);
-    }
+    // Snapshot renewal disabled: low traffic, renewal bursts waste Vercel resources
+    // if (playground && (!snapshotId || !snapshotUsed)) {
+    //   const renewalPromise = triggerSnapshotRenewal(playground.id, playground.owner, playground.repo).catch(
+    //     (err) => console.warn("[Internal] Renewal trigger failed:", err)
+    //   );
+    //   after(renewalPromise);
+    // }
 
     const skipOpencodeInstall =
       cliProvider === "opencode" && usedCompatibleOpencodeSnapshot && snapshotUsed;

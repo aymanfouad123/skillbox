@@ -7,13 +7,126 @@ import {
   internalQuery,
   internalAction,
 } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
   MAX_SANDBOXES,
   HEARTBEAT_TIMEOUT_MS,
+  CLAUDE_FULFILL_TIMEOUT_MS,
   SESSION_DURATION_MS,
   EXTEND_TIMEOUT_MS,
 } from "./constants";
+
+// =============================================================================
+// On-demand maintenance (replaces cron-driven cleanup/queue jobs)
+// =============================================================================
+
+async function archiveExpiredActiveSandboxes(ctx: MutationCtx) {
+  const now = Date.now();
+  const expired = await ctx.db
+    .query("sandboxes")
+    .withIndex("by_status", (q) => q.eq("status", "active"))
+    .filter((q) => q.lt(q.field("expiresAt"), now))
+    .collect();
+
+  for (const sandbox of expired) {
+    console.log(
+      `[Session ended] Expired: ${sandbox.sandboxId} (userId: ${sandbox.userId})`
+    );
+    await ctx.db.patch(sandbox._id, {
+      status: "archived",
+      archivedAt: now,
+    });
+    await ctx.scheduler.runAfter(0, internal.sandboxes.stopVercelSandbox, {
+      sandboxId: sandbox.sandboxId,
+    });
+  }
+
+  if (expired.length > 0) {
+    console.log(`[Session ended] Cleanup: ${expired.length} expired sandbox(es)`);
+  }
+  return expired.length;
+}
+
+async function cleanupStaleClaudeQueueEntries(ctx: MutationCtx) {
+  const now = Date.now();
+  const staleEntries = await ctx.db
+    .query("queue")
+    .withIndex("by_cliProvider_queueExpiresAt", (q) =>
+      q.eq("cliProvider", "claude").lt("queueExpiresAt", now)
+    )
+    .collect();
+
+  for (const entry of staleEntries) {
+    console.log(
+      `Removing stale Claude queue entry for user ${entry.userId} (heartbeat expired)`
+    );
+    await ctx.db.delete(entry._id);
+  }
+  return staleEntries.length;
+}
+
+async function handleSlowClaudeUserAtHead(ctx: MutationCtx) {
+  const now = Date.now();
+  const queue = await ctx.db
+    .query("queue")
+    .withIndex("by_position")
+    .order("asc")
+    .collect();
+
+  const firstEntry = queue[0];
+  if (!firstEntry) return 0;
+  if (firstEntry.cliProvider !== "claude") return 0;
+  if (!firstEntry.readyToFulfillAt) return 0;
+
+  const readyDuration = now - firstEntry.readyToFulfillAt;
+  if (readyDuration < CLAUDE_FULFILL_TIMEOUT_MS) return 0;
+
+  console.log(
+    `Kicking slow Claude user ${firstEntry.userId} to back of queue (ready for ${Math.round(readyDuration / 1000)}s)`
+  );
+
+  const lastInQueue = await ctx.db
+    .query("queue")
+    .withIndex("by_position")
+    .order("desc")
+    .first();
+
+  const newPosition = lastInQueue ? lastInQueue.position + 1 : 1;
+
+  await ctx.db.patch(firstEntry._id, {
+    position: newPosition,
+    readyToFulfillAt: undefined,
+    lastHeartbeat: now,
+    queueExpiresAt: now + HEARTBEAT_TIMEOUT_MS,
+  });
+
+  return 1;
+}
+
+async function runOnDemandMaintenance(ctx: MutationCtx) {
+  const expiredCount = await archiveExpiredActiveSandboxes(ctx);
+  const staleRemoved = await cleanupStaleClaudeQueueEntries(ctx);
+  await handleSlowClaudeUserAtHead(ctx);
+  return { expiredCount, staleRemoved };
+}
+
+function isQueueEntryLive(
+  entry: { cliProvider: string; queueExpiresAt?: number },
+  now: number
+) {
+  if (entry.cliProvider !== "claude") return true;
+  return entry.queueExpiresAt === undefined || entry.queueExpiresAt >= now;
+}
+
+async function countLiveActiveSandboxes(ctx: QueryCtx | MutationCtx) {
+  const now = Date.now();
+  const active = await ctx.db
+    .query("sandboxes")
+    .withIndex("by_status", (q) => q.eq("status", "active"))
+    .collect();
+  return active.filter((s) => s.expiresAt > now).length;
+}
 
 // =============================================================================
 // Queries
@@ -25,11 +138,7 @@ import {
 export const getActiveSandboxCount = query({
   args: {},
   handler: async (ctx) => {
-    const active = await ctx.db
-      .query("sandboxes")
-      .withIndex("by_status", (q) => q.eq("status", "active"))
-      .collect();
-    return active.length;
+    return countLiveActiveSandboxes(ctx);
   },
 });
 
@@ -39,14 +148,16 @@ export const getActiveSandboxCount = query({
 export const getUserStatus = query({
   args: { userId: v.string() },
   handler: async (ctx, args) => {
-    // Check for active sandbox
+    const now = Date.now();
+
+    // Check for active sandbox (ignore expired rows until on-demand cleanup runs)
     const sandbox = await ctx.db
       .query("sandboxes")
       .withIndex("by_userId", (q) => q.eq("userId", args.userId))
       .filter((q) => q.eq(q.field("status"), "active"))
       .first();
 
-    if (sandbox) {
+    if (sandbox && sandbox.expiresAt > now) {
       return {
         type: "sandbox" as const,
         sandboxId: sandbox.sandboxId,
@@ -67,25 +178,23 @@ export const getUserStatus = query({
       .withIndex("by_userId", (q) => q.eq("userId", args.userId))
       .first();
 
-    if (queueEntry) {
-      // Count position
+    if (queueEntry && isQueueEntryLive(queueEntry, now)) {
+      // Count position (exclude stale Claude entries)
       const ahead = await ctx.db
         .query("queue")
         .withIndex("by_position")
         .filter((q) => q.lt(q.field("position"), queueEntry.position))
         .collect();
 
-      const position = ahead.length + 1;
+      const position =
+        ahead.filter((entry) => isQueueEntryLive(entry, now)).length + 1;
 
       // For Claude users at position 1, check if capacity is available
       // Frontend will handle sandbox creation with API key from localStorage
       let readyToFulfill = false;
       if (queueEntry.cliProvider === "claude" && position === 1) {
-        const activeCount = await ctx.db
-          .query("sandboxes")
-          .withIndex("by_status", (q) => q.eq("status", "active"))
-          .collect();
-        readyToFulfill = activeCount.length < MAX_SANDBOXES;
+        const activeCount = await countLiveActiveSandboxes(ctx);
+        readyToFulfill = activeCount < MAX_SANDBOXES;
       }
 
       return {
@@ -99,15 +208,12 @@ export const getUserStatus = query({
     }
 
     // Check capacity
-    const activeCount = await ctx.db
-      .query("sandboxes")
-      .withIndex("by_status", (q) => q.eq("status", "active"))
-      .collect();
+    const activeCount = await countLiveActiveSandboxes(ctx);
 
     return {
       type: "idle" as const,
-      hasCapacity: activeCount.length < MAX_SANDBOXES,
-      activeCount: activeCount.length,
+      hasCapacity: activeCount < MAX_SANDBOXES,
+      activeCount,
     };
   },
 });
@@ -133,6 +239,10 @@ export const registerSandbox = mutation({
     vercelTimeout: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    await runOnDemandMaintenance(ctx);
+
+    const now = Date.now();
+
     // Check if user already has an active sandbox
     const existing = await ctx.db
       .query("sandboxes")
@@ -140,23 +250,18 @@ export const registerSandbox = mutation({
       .filter((q) => q.eq(q.field("status"), "active"))
       .first();
 
-    if (existing) {
+    if (existing && existing.expiresAt > now) {
       return { success: false, error: "already_exists" };
     }
 
     // Verify we're still under capacity (handle race condition gracefully)
-    const activeCount = await ctx.db
-      .query("sandboxes")
-      .withIndex("by_status", (q) => q.eq("status", "active"))
-      .collect();
+    const activeCount = await countLiveActiveSandboxes(ctx);
 
-    if (activeCount.length >= MAX_SANDBOXES) {
+    if (activeCount >= MAX_SANDBOXES) {
       // Race condition: we're now over capacity
       // The Vercel sandbox will expire naturally, just don't register it
       return { success: false, error: "at_capacity" };
     }
-
-    const now = Date.now();
 
     // Calculate expiration based on Vercel timing if available
     // This accounts for setup time that already elapsed
@@ -204,6 +309,8 @@ export const addToQueue = mutation({
     cliProvider: v.union(v.literal("opencode"), v.literal("claude")),
   },
   handler: async (ctx, args) => {
+    await runOnDemandMaintenance(ctx);
+
     // Check if already in queue
     const existing = await ctx.db
       .query("queue")
@@ -258,6 +365,9 @@ export const addToQueue = mutation({
       ...heartbeatFields,
     });
 
+    // Event-triggered queue processing (replaces cron)
+    await ctx.scheduler.runAfter(0, internal.queue.processQueue, {});
+
     return { success: true, position };
   },
 });
@@ -275,6 +385,7 @@ export const cancelQueue = mutation({
 
     if (entry) {
       await ctx.db.delete(entry._id);
+      await ctx.scheduler.runAfter(0, internal.queue.processQueue, {});
       return { success: true };
     }
 
@@ -289,6 +400,8 @@ export const cancelQueue = mutation({
 export const sendHeartbeat = mutation({
   args: { userId: v.string() },
   handler: async (ctx, args) => {
+    await runOnDemandMaintenance(ctx);
+
     const entry = await ctx.db
       .query("queue")
       .withIndex("by_userId", (q) => q.eq("userId", args.userId))
@@ -327,6 +440,7 @@ export const removeFromQueue = mutation({
 
     if (entry) {
       await ctx.db.delete(entry._id);
+      await ctx.scheduler.runAfter(0, internal.queue.processQueue, {});
     }
     // Always return success - fire-and-forget
     return { success: true };
@@ -340,6 +454,10 @@ export const removeFromQueue = mutation({
 export const claimQueueSlot = mutation({
   args: { userId: v.string() },
   handler: async (ctx, args) => {
+    await runOnDemandMaintenance(ctx);
+
+    const now = Date.now();
+
     // Find the queue entry
     const entry = await ctx.db
       .query("queue")
@@ -350,24 +468,22 @@ export const claimQueueSlot = mutation({
       return { success: false, error: "not_in_queue" };
     }
 
-    // Verify they're at position 1
+    // Verify they're at position 1 (exclude stale Claude entries)
     const ahead = await ctx.db
       .query("queue")
       .withIndex("by_position")
       .filter((q) => q.lt(q.field("position"), entry.position))
       .collect();
 
-    if (ahead.length > 0) {
+    const liveAhead = ahead.filter((e) => isQueueEntryLive(e, now));
+    if (liveAhead.length > 0) {
       return { success: false, error: "not_first_in_queue" };
     }
 
     // Verify capacity is available
-    const activeCount = await ctx.db
-      .query("sandboxes")
-      .withIndex("by_status", (q) => q.eq("status", "active"))
-      .collect();
+    const activeCount = await countLiveActiveSandboxes(ctx);
 
-    if (activeCount.length >= MAX_SANDBOXES) {
+    if (activeCount >= MAX_SANDBOXES) {
       return { success: false, error: "no_capacity" };
     }
 
@@ -603,33 +719,8 @@ export const deleteQueueEntry = internalMutation({
 export const cleanupExpiredSandboxes = internalMutation({
   args: {},
   handler: async (ctx) => {
-    const now = Date.now();
-
-    // Find expired active sandboxes
-    const expired = await ctx.db
-      .query("sandboxes")
-      .withIndex("by_status", (q) => q.eq("status", "active"))
-      .filter((q) => q.lt(q.field("expiresAt"), now))
-      .collect();
-
-    for (const sandbox of expired) {
-      console.log(`[Session ended] Expired: ${sandbox.sandboxId} (userId: ${sandbox.userId})`);
-      // Archive
-      await ctx.db.patch(sandbox._id, {
-        status: "archived",
-        archivedAt: now,
-      });
-
-      // Stop Vercel sandbox
-      await ctx.scheduler.runAfter(0, internal.sandboxes.stopVercelSandbox, {
-        sandboxId: sandbox.sandboxId,
-      });
-    }
-
-    if (expired.length > 0) {
-      console.log(`[Session ended] Cleanup: ${expired.length} expired sandbox(es)`);
-    }
-    return { expiredCount: expired.length };
+    const expiredCount = await archiveExpiredActiveSandboxes(ctx);
+    return { expiredCount };
   },
 });
 
